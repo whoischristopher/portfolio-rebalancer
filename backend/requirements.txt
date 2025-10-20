@@ -1,0 +1,8 @@
+Flask==3.0.0
+Flask-CORS==4.0.0
+yfinance==0.2.54
+gunicorn==21.2.0
+requests==2.31.0
+# Add to backend/requirements.txt
+Flask-Caching==2.1.0
+
