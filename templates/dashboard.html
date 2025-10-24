@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard - Portfolio Rebalancer{% endblock %}
+
+{% block content %}
+<h1 style="margin-bottom: 2rem;">Dashboard</h1>
+
+<div class="card">
+    <h2>Portfolio Summary</h2>
+    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 2rem; margin-top: 1.5rem;">
+        <div>
+            <h3 style="color: #7f8c8d; font-size: 0.9rem; font-weight: normal;">Total Value</h3>
+            <p style="font-size: 2rem; color: #2c3e50; font-weight: bold;">${{ "%.2f"|format(total_value) }}</p>
+        </div>
+        <div>
+            <h3 style="color: #7f8c8d; font-size: 0.9rem; font-weight: normal;">Accounts</h3>
+            <p style="font-size: 2rem; color: #3498db; font-weight: bold;">{{ accounts|length }}</p>
+        </div>
+        <div>
+            <h3 style="color: #7f8c8d; font-size: 0.9rem; font-weight: normal;">Asset Classes</h3>
+            <p style="font-size: 2rem; color: #2ecc71; font-weight: bold;">{{ targets|length }}</p>
+        </div>
+    </div>
+</div>
+
+<div class="card">
+    <h2>Recent Accounts</h2>
+    {% if accounts %}
+    <table>
+        <thead>
+            <tr>
+                <th>Account Name</th>
+                <th>Type</th>
+                <th>Holdings</th>
+                <th>Total Value</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for account in accounts[:5] %}
+            <tr>
+                <td><strong>{{ account.name }}</strong></td>
+                <td>{{ account.account_type or 'N/A' }}</td>
+                <td>{{ account.holdings|length }}</td>
+                <td>${{ "%.2f"|format(account.holdings|sum(attribute='market_value')) }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p style="color: #7f8c8d; margin-top: 1rem;">No accounts yet. <a href="{{ url_for('accounts') }}">Add your first account</a></p>
+    {% endif %}
+</div>
+
+<div class="card">
+    <h2>Quick Actions</h2>
+    <div style="display: flex; gap: 1rem; margin-top: 1rem; flex-wrap: wrap;">
+        <a href="{{ url_for('accounts') }}" class="btn btn-primary">Manage Accounts</a>
+        <a href="{{ url_for('holdings') }}" class="btn btn-primary">View Holdings</a>
+        <a href="{{ url_for('targets') }}" class="btn btn-primary">Set Targets</a>
+        <a href="{{ url_for('rebalance') }}" class="btn btn-primary">Rebalance Portfolio</a>
+    </div>
+</div>
+{% endblock %}
+

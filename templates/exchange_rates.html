@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% block title %}Exchange Rates - Portfolio Rebalancer{% endblock %}
+
+{% block content %}
+<h1 style="margin-bottom: 2rem;">Exchange Rates</h1>
+
+<div class="card">
+    <h2>Update or Add Rates</h2>
+    <form method="POST" action="{{ url_for('update_exchange_rates') }}" style="margin-bottom: 1rem;">
+        <button type="submit" class="btn btn-primary">🔄 Fetch Latest Rates (via yFinance)</button>
+    </form>
+    <form method="POST" action="{{ url_for('add_exchange_rate') }}">
+        <div style="display: grid; grid-template-columns: 1fr 1fr 1fr auto; gap: 1rem;">
+            <div class="form-group">
+                <label>From Currency</label>
+                <input type="text" name="from_currency" placeholder="e.g., USD" maxlength="3" required>
+            </div>
+            <div class="form-group">
+                <label>To Currency</label>
+                <input type="text" name="to_currency" placeholder="e.g., CAD" maxlength="3" required>
+            </div>
+            <div class="form-group">
+                <label>Rate</label>
+                <input type="number" step="0.0001" name="rate" placeholder="e.g., 1.35" required>
+            </div>
+            <button type="submit" class="btn btn-success">Add Rate</button>
+        </div>
+    </form>
+</div>
+
+<div class="card">
+    <h2>Recent Exchange Rates</h2>
+    {% if rates %}
+    <table>
+        <thead>
+            <tr>
+                <th>From</th>
+                <th>To</th>
+                <th class="text-right">Rate</th>
+                <th>Date</th>
+                <th>Source</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for rate in rates %}
+            <tr>
+                <td>{{ rate.from_currency }}</td>
+                <td>{{ rate.to_currency }}</td>
+                <td class="text-right">{{ "%.4f"|format(rate.rate) }}</td>
+                <td>{{ rate.date.strftime('%Y-%m-%d') }}</td>
+                <td>{{ rate.source }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p style="color: #7f8c8d;">No exchange rates found. Use the “Fetch Latest Rates” button to pull data.</p>
+    {% endif %}
+</div>
+{% endblock %}
+

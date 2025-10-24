@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+{% block title %}Rebalance - Portfolio Rebalancer{% endblock %}
+
+{% block content %}
+<h1 style="margin-bottom: 2rem;">Rebalance Recommendations</h1>
+
+{% if rebalance_data %}
+<div class="card">
+    <h2>Portfolio Summary</h2>
+    <p style="font-size: 1.5rem; color: #2c3e50;"><strong>Total Portfolio Value:</strong> {{ base_currency }} ${{ "%.2f"|format(total_portfolio) }}</p>
+</div>
+
+<div class="card">
+    <h2>Rebalancing Actions</h2>
+    <table>
+        <thead>
+            <tr>
+                <th>Asset Class</th>
+                <th class="text-right">Current %</th>
+                <th class="text-right">Target %</th>
+                <th class="text-right">Difference</th>
+                <th>Action</th>
+                <th>Recommended Account</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for row in rebalance_data %}
+            <tr>
+                <td><strong>{{ row.asset_class }}</strong></td>
+                <td class="text-right">{{ "%.1f"|format(row.current_pct) }}%</td>
+                <td class="text-right">{{ "%.1f"|format(row.target_pct) }}%</td>
+                <td class="text-right {% if row.difference < 0 %}negative{% elif row.difference > 0 %}positive{% endif %}">
+                    ${{ "%.2f"|format(row.difference|abs) }}
+                </td>
+                <td>
+                    {% if row.action %}
+                        {% if row.action == 'BUY' %}
+                        <span class="positive"><strong>BUY</strong></span>
+                        {% else %}
+                        <span class="negative"><strong>SELL</strong></span>
+                        {% endif %}
+                    {% else %}
+                    <span style="color: #7f8c8d;">HOLD</span>
+                    {% endif %}
+                </td>
+                <td>
+                    {{ row.preferred_account.name if row.preferred_account else '—' }}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+<form method="POST" action="{{ url_for('generate_rebalance_transactions') }}" style="margin-top: 1.5rem;">
+    <button type="submit" class="btn btn-success">Generate Recommended Transactions</button>
+</form>
+
+{% else %}
+<div class="card">
+    <p style="color: #7f8c8d;">No rebalancing data available. Make sure the following conditions are met:</p>
+    <ul style="margin-top: 1rem; color: #7f8c8d;">
+        <li>At least one account with holdings</li>
+        <li>Configured target allocations</li>
+        <li>Exchange rates available for currency conversion</li>
+    </ul>
+    <div style="margin-top: 2rem;">
+        <a href="{{ url_for('accounts') }}" class="btn btn-primary">Manage Accounts</a>
+        <a href="{{ url_for('targets') }}" class="btn btn-primary">Set Targets</a>
+    </div>
+</div>
+{% endif %}
+{% endblock %}
+

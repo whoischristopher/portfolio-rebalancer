@@ -1,0 +1,178 @@
+{% extends "base.html" %}
+
+{% block title %}Target Allocation - Portfolio Rebalancer{% endblock %}
+
+{% block content %}
+<h1 style="margin-bottom: 2rem;">Target Allocation</h1>
+
+<div class="card">
+    <h2>Set Your Target Asset Allocation</h2>
+    <p style="color: #7f8c8d; margin-bottom: 1.5rem;">Define the percentage allocation for each asset class with account restrictions. Total should equal 100%.</p>
+    
+    <form method="POST" action="{{ url_for('update_targets') }}">
+        <div id="targets-container">
+            {% if targets %}
+                {% for target in targets %}
+                <div class="target-row" style="border: 1px solid #ddd; padding: 1rem; margin-bottom: 1rem; border-radius: 4px;">
+                    <div style="display: grid; grid-template-columns: 2fr 1fr 1fr; gap: 1rem; margin-bottom: 0.5rem;">
+                        <div class="form-group" style="margin-bottom: 0;">
+                            <label>Asset Class</label>
+                            <input type="text" name="asset_class_{{ loop.index }}" value="{{ target.asset_class }}" required placeholder="e.g., US Equity">
+                        </div>
+                        <div class="form-group" style="margin-bottom: 0;">
+                            <label>Target %</label>
+                            <input type="number" step="0.1" name="percentage_{{ loop.index }}" value="{{ target.target_percentage }}" required placeholder="25.0">
+                        </div>
+                        <div class="form-group" style="margin-bottom: 0;">
+                            <label>Preferred Account Type</label>
+                            <select name="preferred_account_{{ loop.index }}">
+                                <option value="">None</option>
+                                <option value="RRSP" {% if target.preferred_account_type == 'RRSP' %}selected{% endif %}>RRSP</option>
+                                <option value="TFSA" {% if target.preferred_account_type == 'TFSA' %}selected{% endif %}>TFSA</option>
+                                <option value="Non-Registered" {% if target.preferred_account_type == 'Non-Registered' %}selected{% endif %}>Non-Registered</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div style="display: flex; gap: 1rem; align-items: center;">
+                        <label>
+                            <input type="checkbox" name="allowed_registered_{{ loop.index }}" {% if target.allowed_in_registered %}checked{% endif %}>
+                            Allow in Registered Accounts
+                        </label>
+                        <label>
+                            <input type="checkbox" name="allowed_nonregistered_{{ loop.index }}" {% if target.allowed_in_nonregistered %}checked{% endif %}>
+                            Allow in Non-Registered Accounts
+                        </label>
+                        <button type="button" class="btn btn-danger" onclick="this.parentElement.parentElement.remove()">Remove</button>
+                    </div>
+                </div>
+                {% endfor %}
+            {% else %}
+                <div class="target-row" style="border: 1px solid #ddd; padding: 1rem; margin-bottom: 1rem; border-radius: 4px;">
+                    <div style="display: grid; grid-template-columns: 2fr 1fr 1fr; gap: 1rem; margin-bottom: 0.5rem;">
+                        <div class="form-group" style="margin-bottom: 0;">
+                            <label>Asset Class</label>
+                            <input type="text" name="asset_class_1" required placeholder="e.g., US Equity">
+                        </div>
+                        <div class="form-group" style="margin-bottom: 0;">
+                            <label>Target %</label>
+                            <input type="number" step="0.1" name="percentage_1" required placeholder="25.0">
+                        </div>
+                        <div class="form-group" style="margin-bottom: 0;">
+                            <label>Preferred Account Type</label>
+                            <select name="preferred_account_1">
+                                <option value="">None</option>
+                                <option value="RRSP">RRSP</option>
+                                <option value="TFSA">TFSA</option>
+                                <option value="Non-Registered">Non-Registered</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div style="display: flex; gap: 1rem; align-items: center;">
+                        <label>
+                            <input type="checkbox" name="allowed_registered_1" checked>
+                            Allow in Registered Accounts
+                        </label>
+                        <label>
+                            <input type="checkbox" name="allowed_nonregistered_1" checked>
+                            Allow in Non-Registered Accounts
+                        </label>
+                        <button type="button" class="btn btn-danger" onclick="this.parentElement.parentElement.remove()">Remove</button>
+                    </div>
+                </div>
+            {% endif %}
+        </div>
+        
+        <div style="margin-top: 1rem; display: flex; gap: 1rem;">
+            <button type="button" class="btn btn-primary" onclick="addTargetRow()">Add Asset Class</button>
+            <button type="submit" class="btn btn-success">Save Targets</button>
+        </div>
+    </form>
+</div>
+
+{% if targets %}
+<div class="card">
+    <h2>Current Target Allocation</h2>
+    <table>
+        <thead>
+            <tr>
+                <th>Asset Class</th>
+                <th class="text-right">Target %</th>
+                <th>Preferred Account</th>
+                <th>Restrictions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for target in targets %}
+            <tr>
+                <td><strong>{{ target.asset_class }}</strong></td>
+                <td class="text-right">{{ "%.1f"|format(target.target_percentage) }}%</td>
+                <td>{{ target.preferred_account_type or '-' }}</td>
+                <td style="font-size: 0.85rem;">
+                    {% if target.allowed_in_registered and target.allowed_in_nonregistered %}
+                    Any account
+                    {% elif target.allowed_in_registered %}
+                    Registered only
+                    {% elif target.allowed_in_nonregistered %}
+                    Non-registered only
+                    {% else %}
+                    <span style="color: #e74c3c;">No accounts allowed!</span>
+                    {% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+            <tr style="background: #f8f9fa; font-weight: bold;">
+                <td>Total:</td>
+                <td class="text-right">{{ "%.1f"|format(targets|sum(attribute='target_percentage')) }}%</td>
+                <td colspan="2"></td>
+            </tr>
+        </tbody>
+    </table>
+</div>
+{% endif %}
+
+<script>
+let targetCounter = {{ targets|length if targets else 1 }};
+
+function addTargetRow() {
+    targetCounter++;
+    const container = document.getElementById('targets-container');
+    const row = document.createElement('div');
+    row.className = 'target-row';
+    row.style.cssText = 'border: 1px solid #ddd; padding: 1rem; margin-bottom: 1rem; border-radius: 4px;';
+    row.innerHTML = `
+        <div style="display: grid; grid-template-columns: 2fr 1fr 1fr; gap: 1rem; margin-bottom: 0.5rem;">
+            <div class="form-group" style="margin-bottom: 0;">
+                <label>Asset Class</label>
+                <input type="text" name="asset_class_${targetCounter}" required placeholder="e.g., Bonds">
+            </div>
+            <div class="form-group" style="margin-bottom: 0;">
+                <label>Target %</label>
+                <input type="number" step="0.1" name="percentage_${targetCounter}" required placeholder="10.0">
+            </div>
+            <div class="form-group" style="margin-bottom: 0;">
+                <label>Preferred Account Type</label>
+                <select name="preferred_account_${targetCounter}">
+                    <option value="">None</option>
+                    <option value="RRSP">RRSP</option>
+                    <option value="TFSA">TFSA</option>
+                    <option value="Non-Registered">Non-Registered</option>
+                </select>
+            </div>
+        </div>
+        <div style="display: flex; gap: 1rem; align-items: center;">
+            <label>
+                <input type="checkbox" name="allowed_registered_${targetCounter}" checked>
+                Allow in Registered Accounts
+            </label>
+            <label>
+                <input type="checkbox" name="allowed_nonregistered_${targetCounter}" checked>
+                Allow in Non-Registered Accounts
+            </label>
+            <button type="button" class="btn btn-danger" onclick="this.parentElement.parentElement.remove()">Remove</button>
+        </div>
+    `;
+    container.appendChild(row);
+}
+</script>
+{% endblock %}
+

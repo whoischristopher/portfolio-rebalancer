@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}Settings - Portfolio Rebalancer{% endblock %}
+
+{% block content %}
+<h1 style="margin-bottom: 2rem;">Settings</h1>
+
+<div class="card">
+    <h2>User Preferences</h2>
+    <form method="POST" action="{{ url_for('update_settings') }}">
+        <div class="form-group">
+            <label for="base_currency">Base Currency</label>
+            <select id="base_currency" name="base_currency" required>
+                <option value="CAD" {% if user.base_currency == 'CAD' %}selected{% endif %}>CAD</option>
+                <option value="USD" {% if user.base_currency == 'USD' %}selected{% endif %}>USD</option>
+            </select>
+        </div>
+        <button type="submit" class="btn btn-success">Save Settings</button>
+    </form>
+</div>
+
+<div class="card">
+    <h2>Account Information</h2>
+    <p>Email: {{ user.email }}</p>
+    <p>Name: {{ user.name }}</p>
+    {% if user.picture %}
+    <img src="{{ user.picture }}" alt="{{ user.name }}" width="80" style="border-radius: 40px; margin-top: 0.5rem;">
+    {% endif %}
+</div>
+{% endblock %}
+

@@ -1,0 +1,83 @@
+{% extends "base.html" %}
+{% block title %}Preferences - Portfolio Rebalancer{% endblock %}
+
+{% block content %}
+<h1 style="margin-bottom: 2rem;">Asset Class Preferences</h1>
+
+<div class="card">
+    <h2>Add New Preference</h2>
+    <form method="POST" action="{{ url_for('add_preference') }}">
+        <div style="display: grid; grid-template-columns: 2fr 1fr 1fr 2fr auto; gap: 1rem; align-items: end;">
+            <div class="form-group" style="margin-bottom: 0;">
+                <label for="asset_class">Asset Class</label>
+                <select id="asset_class" name="asset_class" required>
+                    {% for target in targets %}
+                    <option value="{{ target.asset_class }}">{{ target.asset_class }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="form-group" style="margin-bottom: 0;">
+                <label for="preferred_account_id">Preferred Account</label>
+                <select id="preferred_account_id" name="preferred_account_id">
+                    <option value="">None</option>
+                    {% for account in accounts %}
+                    <option value="{{ account.id }}">{{ account.name }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="form-group" style="margin-bottom: 0;">
+                <label><input type="checkbox" name="only_in_registered"> Only in Registered</label><br>
+                <label><input type="checkbox" name="only_in_nonregistered"> Only in Non-Registered</label>
+            </div>
+            <div class="form-group" style="margin-bottom: 0;">
+                <label for="avoid_account_types">Avoid Account Types</label>
+                <input type="text" name="avoid_account_types" placeholder="e.g., TFSA, LIRA">
+            </div>
+            <button type="submit" class="btn btn-success">Add Preference</button>
+        </div>
+        <div style="margin-top: 1rem;">
+            <label for="notes">Notes</label>
+            <textarea id="notes" name="notes" rows="2" style="width: 100%;"></textarea>
+        </div>
+    </form>
+</div>
+
+<div class="card">
+    <h2>Current Preferences</h2>
+    {% if preferences %}
+    <table>
+        <thead>
+            <tr>
+                <th>Asset Class</th>
+                <th>Preferred Account</th>
+                <th>Restrictions</th>
+                <th>Notes</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for pref in preferences %}
+            <tr>
+                <td>{{ pref.asset_class }}</td>
+                <td>{{ pref.preferred_account.name if pref.preferred_account else '-' }}</td>
+                <td>
+                    {% if pref.only_in_registered %} Registered Only<br>{% endif %}
+                    {% if pref.only_in_nonregistered %} Non-Registered Only<br>{% endif %}
+                    {% if pref.avoid_account_types %}<em>Avoid:</em> {{ pref.avoid_account_types }}{% endif %}
+                </td>
+                <td>{{ pref.notes or '-' }}</td>
+                <td>
+                    <form method="POST" action="{{ url_for('delete_preference', pref_id=pref.id) }}" onsubmit="return confirm('Delete this preference?');">
+                        <button type="submit" class="btn btn-danger">Delete</button>
+                    </form>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p style="color: #7f8c8d;">No preferences yet. Add one above.</p>
+    {% endif %}
+</div>
+{% endblock %}
+
