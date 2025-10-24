@@ -244,15 +244,29 @@ def delete_account(account_id):
     flash(f'Account "{account.name}" deleted successfully', 'success')
     return redirect(url_for('accounts'))
 
-
 @app.route('/holdings')
 @login_required
 def holdings():
-    '''View all holdings'''
+    """View all holdings, with joined security and preference data"""
+
+    # Pull all accounts for the current user
     accounts = Account.query.filter_by(user_id=current_user.id).all()
+
+    # FX rates for portfolio display
     exchange_rates = get_exchange_rates(current_user)
 
-    # Derive distinct asset classes from user's Targets
+    # Query holdings, joining related models so templates can render complete info
+    holdings = (
+        db.session.query(Holding)
+        .join(Account)
+        .outerjoin(Security)
+        .outerjoin(SecurityPreference)
+        .filter(Account.user_id == current_user.id)
+        .order_by(Account.name.asc(), Security.ticker.asc())
+        .all()
+    )
+
+    # Collect asset classes from user's Target table (for dropdowns, filters, etc.)
     asset_classes = (
         db.session.query(Target.asset_class)
         .filter_by(user_id=current_user.id)
@@ -260,16 +274,16 @@ def holdings():
         .order_by(Target.asset_class.asc())
         .all()
     )
-    # Flatten list of tuples to simple string list
     asset_classes = [cls[0] for cls in asset_classes if cls[0]]
 
-    # Render holdings page with dropdown-ready asset_classes list
+    # Render holdings page: includes holdings, preferences, dropdown asset classes
     return render_template(
         'holdings.html',
+        holdings=holdings,
         accounts=accounts,
         exchange_rates=exchange_rates,
         base_currency=current_user.base_currency,
-        asset_classes=asset_classes,   # <-- new template variable
+        asset_classes=asset_classes,  # Still useful for filters or summaries
     )
 
 @app.route('/holdings/add', methods=['POST'])
@@ -409,18 +423,41 @@ def update_targets():
 def preferences():
     '''View and manage asset class preferences'''
 
-    # Retrieve the current user's stored preferences, accounts, and targets
-    user_preferences = AssetClassPreference.query.filter_by(user_id=current_user.id).all()
-    accounts = Account.query.filter_by(user_id=current_user.id).all()
-    targets = Target.query.filter_by(user_id=current_user.id).all()
+    # All accounts owned by the user
+    accounts = Account.query.filter_by(user_id=current_user.id).order_by(Account.name.asc()).all()
 
-    # Render with additional variable for the dropdown in preferences.html
+    # All securities joined with asset class (for nice grouping)
+    securities = (
+        db.session.query(Security)
+        .join(AssetClass)
+        .order_by(AssetClass.name.asc(), Security.ticker.asc())
+        .all()
+    )
+
+    # Existing preferences for this user's accounts
+    preferences = (
+        db.session.query(SecurityPreference)
+        .join(Security)
+        .join(Account)
+        .filter(Account.user_id == current_user.id)
+        .order_by(Security.ticker.asc())
+        .all()
+    )
+
+    # Provide restriction type options for form select menus
+    restriction_types = [
+        'unrestricted',
+        'restricted_to_accounts',
+        'restricted_to_accounts_with_model'
+    ]
+
     return render_template(
         'preferences.html',
-        preferences=user_preferences,
         accounts=accounts,
-        targets=targets,
-    )    
+        securities=securities,
+        preferences=preferences,
+        restriction_types=restriction_types,
+    )
 
 @app.route('/preferences/add', methods=['POST'])
 @login_required
@@ -471,6 +508,35 @@ def delete_preference(pref_id):
     flash(f'Preference for {asset_class} deleted successfully', 'success')
     return redirect(url_for('preferences'))
 
+@app.route('/save_preferences', methods=['POST'])
+@login_required
+def save_preferences():
+    """Persist security preference selections"""
+    for security in Security.query.all():
+        restriction = request.form.get(f'restriction_type_{security.id}')
+        account_id = request.form.get(f'account_id_{security.id}')
+
+        if restriction:
+            # find existing record
+            pref = (
+                SecurityPreference.query
+                .filter_by(security_id=security.id, account_id=account_id)
+                .join(Account)
+                .filter(Account.user_id == current_user.id)
+                .first()
+            )
+
+            if pref:
+                pref.restriction_type = restriction
+            else:
+                db.session.add(SecurityPreference(
+                    security_id=security.id,
+                    account_id=account_id or None,
+                    restriction_type=restriction
+                ))
+    db.session.commit()
+    flash('Preferences updated successfully.')
+    return redirect(url_for('preferences'))
 
 @app.route('/rebalance')
 @login_required
