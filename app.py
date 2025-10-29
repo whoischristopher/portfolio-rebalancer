@@ -1,8 +1,7 @@
 import os
 from flask import Flask, render_template, redirect, url_for, request, jsonify, flash
 from flask_login import LoginManager, login_required, current_user
-from models import db, User, Account, Holding, Target, AssetClassPreference, ExchangeRate, RebalanceTransaction
-from auth import auth_bp, init_oauth
+from extensions import db
 import yfinance as yf
 from datetime import datetime, timedelta
 from collections import defaultdict
@@ -20,6 +19,9 @@ app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
 
 # Initialize database
 db.init_app(app)
+
+from models import *
+from auth import auth_bp, init_oauth
 
 # Initialize Flask-Login
 login_manager = LoginManager()
@@ -142,7 +144,7 @@ def calculate_portfolio_allocation(user, exchange_rates):
     for account in user.accounts:
         for holding in account.holdings:
             value = holding.market_value_in_base_currency(exchange_rates)
-            allocation[holding.asset_class] += value
+            allocation[holding.asset_class.name] += value
             total_value += value
     
     # Convert to percentages
@@ -267,14 +269,8 @@ def holdings():
     )
 
     # Collect asset classes from user's Target table (for dropdowns, filters, etc.)
-    asset_classes = (
-        db.session.query(Target.asset_class)
-        .filter_by(user_id=current_user.id)
-        .distinct()
-        .order_by(Target.asset_class.asc())
-        .all()
-    )
-    asset_classes = [cls[0] for cls in asset_classes if cls[0]]
+    asset_classes = AssetClass.query.order_by(AssetClass.name.asc()).all()
+    securities = Security.query.order_by(Security.ticker.asc()).all() 
 
     # Render holdings page: includes holdings, preferences, dropdown asset classes
     return render_template(
@@ -283,7 +279,8 @@ def holdings():
         accounts=accounts,
         exchange_rates=exchange_rates,
         base_currency=current_user.base_currency,
-        asset_classes=asset_classes,  # Still useful for filters or summaries
+        asset_classes=asset_classes,
+        securities=securities,
     )
 
 @app.route('/holdings/add', methods=['POST'])
@@ -291,38 +288,41 @@ def holdings():
 def add_holding():
     '''Add new holding to an account'''
     account_id = request.form.get('account_id')
+    security_id = request.form.get('security_id')
     ticker = request.form.get('ticker')
     quantity = request.form.get('quantity')
     price = request.form.get('price')
     currency = request.form.get('currency', 'CAD')
-    asset_class = request.form.get('asset_class')
-    is_public = request.form.get('is_public') == 'on'
-    auto_update = request.form.get('auto_update_price') == 'on'
+    asset_class_id = request.form.get('asset_class_id')
     
     account = Account.query.get_or_404(account_id)
     if account.user_id != current_user.id:
         flash('Unauthorized access', 'error')
         return redirect(url_for('holdings'))
     
-    if not all([ticker, quantity, asset_class]):
+    if not all([security_id, quantity]):
         flash('Ticker, quantity, and asset class are required', 'error')
         return redirect(url_for('holdings'))
     
+    # Get security details
+    security = Security.query.get_or_404(security_id)
+
     holding = Holding(
         account_id=account_id,
-        ticker=ticker.upper(),
+        security_id=security_id,
+        ticker=security.ticker,
         quantity=float(quantity),
         price=float(price) if price else 0,
-        currency=currency,
-        asset_class=asset_class,
-        is_public=is_public,
-        auto_update_price=auto_update
+        currency=security.currency if hasattr(security, 'currency') else 'CAD',
+        asset_class_id=security.asset_class_id,
+        is_public=security.is_public,
+        auto_update_price=security.auto_update_price 
     )
     
     # If public and auto-update enabled, fetch price from yFinance
-    if is_public and auto_update and not price:
+    if holding.is_public and holding.auto_update and not price:
         try:
-            ticker_data = yf.Ticker(ticker)
+            ticker_data = yf.Ticker(security.ticker)
             info = ticker_data.info
             current_price = info.get('currentPrice') or info.get('regularMarketPrice')
             if current_price:
@@ -330,14 +330,41 @@ def add_holding():
                 holding.name = info.get('longName', '')
                 holding.last_price_update = datetime.utcnow()
         except Exception as e:
-            print(f"Could not fetch price for {ticker}: {e}")
+            print(f"Could not fetch price for {security.ticker}: {e}")
     
     db.session.add(holding)
     db.session.commit()
     
-    flash(f'Holding {ticker} added successfully', 'success')
+    flash(f'Holding {security.ticker} added successfully', 'success')
     return redirect(url_for('holdings'))
 
+@app.route("/edit_holding/<int:holding_id>", methods=["GET", "POST"])
+@login_required
+def edit_holding(holding_id):
+    holding = Holding.query.get_or_404(holding_id)
+    accounts = Account.query.filter_by(user_id=current_user.id).all()
+    asset_classes = AssetClass.query.order_by(AssetClass.name.asc()).all()
+
+    securities = Security.query.all()
+
+    if request.method == "POST":
+        holding.account_id = request.form.get("account_id")
+        holding.quantity = request.form.get("quantity")
+        holding.price = request.form.get("price")
+        holding.asset_class_id = request.form.get('asset_class_id')
+        holding.security_id = request.form.get("security_id")
+        holding.notes = request.form.get("notes")
+        db.session.commit()
+        flash("Holding updated successfully.")
+        return redirect(url_for("holdings"))
+
+    return render_template(
+        "edit_holding.html",
+        holding=holding,
+        accounts=accounts,
+        securities=securities,
+        asset_classes=asset_classes,
+    )
 
 @app.route('/holdings/<int:holding_id>/delete', methods=['POST'])
 @login_required
@@ -372,14 +399,54 @@ def update_prices():
     flash(f'Updated {updated_count} holdings from market data', 'success')
     return redirect(url_for('holdings'))
 
+@app.route('/asset-classes/manage', methods=['GET', 'POST'])
+@login_required
+def manage_asset_classes():
+    '''Manage asset classes - view, add, delete'''
+    if request.method == 'POST':
+        action = request.form.get('action')
+        
+        if action == 'add':
+            name = request.form.get('name')
+            if name:
+                # Check if already exists
+                existing = AssetClass.query.filter_by(name=name).first()
+                if existing:
+                    flash(f'Asset class "{name}" already exists', 'warning')
+                else:
+                    ac = AssetClass(name=name)
+                    db.session.add(ac)
+                    db.session.commit()
+                    flash(f'Asset class "{name}" added successfully', 'success')
+        
+        elif action == 'delete':
+            ac_id = request.form.get('asset_class_id')
+            if ac_id:
+                ac = AssetClass.query.get(ac_id)
+                if ac:
+                    # Check if it's used by any targets, holdings, or securities
+                    if ac.targets or ac.holdings or ac.securities:
+                        flash(f'Cannot delete "{ac.name}" - it is currently in use', 'error')
+                    else:
+                        db.session.delete(ac)
+                        db.session.commit()
+                        flash(f'Asset class "{ac.name}" deleted successfully', 'success')
+        
+        return redirect(url_for('manage_asset_classes'))
+    
+    # GET request - show all asset classes
+    asset_classes = AssetClass.query.order_by(AssetClass.name.asc()).all()
+    return render_template('manage_asset_classes.html', asset_classes=asset_classes)
+
 @app.route('/targets')
 @login_required
 def targets():
     '''View and edit target allocations'''
     user_targets = Target.query.filter_by(user_id=current_user.id).all()
     accounts = Account.query.filter_by(user_id=current_user.id).all()
-    return render_template('targets.html', targets=user_targets, accounts=accounts)
+    asset_classes = AssetClass.query.order_by(AssetClass.name.asc()).all()
 
+    return render_template('targets.html', targets=user_targets, accounts=accounts, asset_classes=asset_classes)
 
 @app.route('/targets/update', methods=['POST'])
 @login_required
@@ -388,23 +455,35 @@ def update_targets():
     # Delete existing targets
     Target.query.filter_by(user_id=current_user.id).delete()
     
-    # Add new targets from form
     target_count = 0
-    for key, value in request.form.items():
-        if key.startswith('asset_class_'):
+    for key in request.form.keys():
+        if key.startswith('asset_class_id_'):
             index = key.split('_')[-1]
-            asset_class = request.form.get(f'asset_class_{index}')
+            asset_class_id = request.form.get(f'asset_class_id_{index}')
+            new_asset_class_name = request.form.get(f'new_asset_class_{index}')
             percentage = request.form.get(f'percentage_{index}')
+            
+            # Handle new asset class creation
+            if asset_class_id == 'new' and new_asset_class_name:
+                # Check if asset class already exists
+                existing = AssetClass.query.filter_by(name=new_asset_class_name).first()
+                if existing:
+                    asset_class_id = existing.id
+                else:
+                    new_ac = AssetClass(name=new_asset_class_name)
+                    db.session.add(new_ac)
+                    db.session.flush()  # Get the ID
+                    asset_class_id = new_ac.id
             
             # Get restrictions
             allowed_registered = request.form.get(f'allowed_registered_{index}') == 'on'
             allowed_nonregistered = request.form.get(f'allowed_nonregistered_{index}') == 'on'
             preferred_account = request.form.get(f'preferred_account_{index}')
             
-            if asset_class and percentage:
+            if asset_class_id and asset_class_id != 'new' and percentage:
                 target = Target(
                     user_id=current_user.id,
-                    asset_class=asset_class,
+                    asset_class_id=int(asset_class_id),
                     target_percentage=float(percentage),
                     allowed_in_registered=allowed_registered,
                     allowed_in_nonregistered=allowed_nonregistered,
@@ -417,96 +496,174 @@ def update_targets():
     flash(f'{target_count} target allocation(s) updated successfully', 'success')
     return redirect(url_for('targets'))
 
-
-@app.route('/preferences')
+@app.route("/securities")
 @login_required
-def preferences():
-    '''View and manage asset class preferences'''
-
-    # All accounts owned by the user
-    accounts = Account.query.filter_by(user_id=current_user.id).order_by(Account.name.asc()).all()
-
-    # All securities joined with asset class (for nice grouping)
+def securities():
+    """View and manage securities and restrictions"""
     securities = (
         db.session.query(Security)
-        .join(AssetClass)
+        .outerjoin(AssetClass)
         .order_by(AssetClass.name.asc(), Security.ticker.asc())
         .all()
     )
 
-    # Existing preferences for this user's accounts
-    preferences = (
-        db.session.query(SecurityPreference)
-        .join(Security)
-        .join(Account)
-        .filter(Account.user_id == current_user.id)
-        .order_by(Security.ticker.asc())
+    # Get preferences for this user
+    prefs = (
+        SecurityPreference.query
+        .filter_by(user_id=current_user.id)
         .all()
     )
-
-    # Provide restriction type options for form select menus
+    
+    # Create preference lookup dictionary
+    pref_map = {pref.security_id: pref for pref in prefs}
+    
+    accounts = Account.query.filter_by(user_id=current_user.id).all()
     restriction_types = [
-        'unrestricted',
-        'restricted_to_accounts',
-        'restricted_to_accounts_with_model'
+        ("unrestricted", "Unrestricted - Can be held in any account"),
+        ("restricted_to_accounts", "Restricted - Only specific accounts allowed"),
+        ("prioritized_accounts", "Prioritized - Prefer certain accounts over others"),
     ]
 
+    asset_classes = AssetClass.query.order_by(AssetClass.name.asc()).all()
+
     return render_template(
-        'preferences.html',
-        accounts=accounts,
+        "securities.html",
         securities=securities,
-        preferences=preferences,
+        preferences=pref_map,
+        accounts=accounts,
         restriction_types=restriction_types,
+        asset_classes=asset_classes,
     )
 
-@app.route('/preferences/add', methods=['POST'])
+@app.route("/edit_security/<int:security_id>", methods=["GET", "POST"])
 @login_required
-def add_preference():
-    '''Add asset class preference'''
-    asset_class = request.form.get('asset_class')
-    preferred_account_id = request.form.get('preferred_account_id')
-    only_registered = request.form.get('only_in_registered') == 'on'
-    only_nonregistered = request.form.get('only_in_nonregistered') == 'on'
-    avoid_accounts = request.form.get('avoid_account_types')
+def edit_security(security_id):
+    security = Security.query.get_or_404(security_id)
+    
+    if request.method == "POST":
+        security.ticker = request.form.get("ticker")
+        security.name = request.form.get("name")
+        security.asset_class_id = request.form.get("asset_class_id")
+        security.currency = request.form.get("currency", "CAD")
+        security.is_public = request.form.get("is_public") == "on"
+        security.auto_update_price = request.form.get("auto_update_price") == "on"
+        
+        db.session.commit()
+        flash(f"Security {security.ticker} updated successfully.")
+        return redirect(url_for("securities"))
+    
+    asset_classes = AssetClass.query.order_by(AssetClass.name.asc()).all()
+    return render_template("edit_security.html", security=security, asset_classes=asset_classes)
+
+@app.route('/securities/<int:security_id>/preference', methods=['POST'])
+@login_required
+def update_security_preference(security_id):
+    '''Update preference/restriction for a specific security'''
+    security = Security.query.get_or_404(security_id)
+    
+    restriction_type = request.form.get('restriction_type')
+    account_id = request.form.get('account_id')
     notes = request.form.get('notes')
     
-    if not asset_class:
-        flash('Asset class is required', 'error')
-        return redirect(url_for('preferences'))
+    if not restriction_type:
+        flash('Restriction type is required', 'error')
+        return redirect(url_for('securities'))
+
+    # Build account configuration based on restriction type
+    account_config = None
     
-    preference = AssetClassPreference(
-        user_id=current_user.id,
-        asset_class=asset_class,
-        preferred_account_id=int(preferred_account_id) if preferred_account_id else None,
-        only_in_registered=only_registered,
-        only_in_nonregistered=only_nonregistered,
-        avoid_account_types=avoid_accounts,
-        notes=notes
-    )
+    if restriction_type == 'restricted_to_accounts':
+        # Get list of allowed accounts
+        allowed_accounts = request.form.getlist('allowed_accounts[]')
+        if allowed_accounts:
+            account_config = {"allowed": [int(aid) for aid in allowed_accounts]}
     
-    db.session.add(preference)
+    elif restriction_type == 'prioritized_accounts':
+        # Get prioritized account lists
+        priority_1 = request.form.getlist('priority_1[]')
+        priority_2 = request.form.getlist('priority_2[]')
+        priority_3 = request.form.getlist('priority_3[]')
+        
+        account_config = {}
+        if priority_1:
+            account_config['priority_1'] = [int(aid) for aid in priority_1]
+        if priority_2:
+            account_config['priority_2'] = [int(aid) for aid in priority_2]
+        if priority_3:
+            account_config['priority_3'] = [int(aid) for aid in priority_3]
+    
+    # Find or create preference
+    pref = SecurityPreference.query.filter_by(
+        security_id=security_id, 
+        user_id=current_user.id
+    ).first()
+    
+    if pref:
+        pref.restriction_type = restriction_type
+        pref.account_config = account_config
+        pref.notes = notes
+    else:
+        pref = SecurityPreference(
+            security_id=security_id,
+            user_id=current_user.id,
+            restriction_type=restriction_type,
+            account_config=account_config,
+            notes=notes
+        )
+        db.session.add(pref)
+
     db.session.commit()
-    
-    flash(f'Preference for {asset_class} added successfully', 'success')
-    return redirect(url_for('preferences'))
+    flash(f'Preference for {security.ticker} updated successfully', 'success')
+    return redirect(url_for('securities'))
 
 
-@app.route('/preferences/<int:pref_id>/delete', methods=['POST'])
+@app.route("/add_security", methods=["GET", "POST"])
 @login_required
-def delete_preference(pref_id):
-    '''Delete a preference'''
-    preference = AssetClassPreference.query.get_or_404(pref_id)
-    
-    if preference.user_id != current_user.id:
-        flash('Unauthorized access', 'error')
-        return redirect(url_for('preferences'))
-    
-    asset_class = preference.asset_class
-    db.session.delete(preference)
+def add_security():
+    if request.method == "POST":
+        ticker = request.form.get("ticker")
+        name = request.form.get("name")
+        asset_class_id = request.form.get("asset_class_id")
+        currency = request.form.get("currency", "CAD")
+        is_public = request.form.get("is_public") == "on"
+        auto_update_price = request.form.get("auto_update_price") == "on"
+
+        if not ticker:
+            flash('Ticker is required', 'error')
+            asset_classes = AssetClass.query.order_by(AssetClass.name.asc()).all()
+            return render_template("add_security.html", asset_classes=asset_classes)
+        
+        if not asset_class_id:
+            flash('Asset class is required', 'error')
+            asset_classes = AssetClass.query.order_by(AssetClass.name.asc()).all()
+            return render_template("add_security.html", asset_classes=asset_classes)
+
+        security = Security(
+            ticker=ticker,
+            name=name,
+            asset_class_id=int(asset_class_id),
+            currency=currency,
+            is_public=is_public,
+            auto_update_price=auto_update_price
+        )
+        db.session.add(security)
+        db.session.commit()
+        flash(f"Security {ticker} added.")
+        return redirect(url_for("securities"))
+
+    asset_classes = AssetClass.query.order_by(AssetClass.name.asc()).all()
+    return render_template("add_security.html", asset_classes=asset_classes)
+
+
+@app.route("/delete_security/<int:security_id>", methods=["POST"])
+@login_required
+def delete_security(security_id):
+    s = Security.query.get_or_404(security_id)
+    db.session.delete(s)
     db.session.commit()
-    
-    flash(f'Preference for {asset_class} deleted successfully', 'success')
-    return redirect(url_for('preferences'))
+    flash(f"Deleted {s.ticker}.")
+    return redirect(url_for("securities"))
+
 
 @app.route('/save_preferences', methods=['POST'])
 @login_required
@@ -560,13 +717,13 @@ def rebalance():
     transactions = []
     
     for target in targets:
-        current_value = allocation.get(target.asset_class, 0)
-        current_pct = allocation_pct.get(target.asset_class, 0)
+        current_value = allocation.get(target.asset_class_id, 0)
+        current_pct = allocation_pct.get(target.asset_class_id, 0)
         target_value = total_portfolio * target.target_percentage / 100
         difference = target_value - current_value
         
         # Get preference for this asset class
-        preference = preference_map.get(target.asset_class)
+        preference = preference_map.get(target.asset_class_id)
         
         # Determine eligible accounts
         eligible_accounts = []
@@ -612,7 +769,7 @@ def rebalance():
                 preferred_account = max(eligible_accounts, key=lambda a: a.priority)
         
         rebalance_data.append({
-            'asset_class': target.asset_class,
+            'asset_class': target.asset_class.name,
             'current_value': current_value,
             'current_pct': current_pct,
             'target_pct': target.target_percentage,
@@ -649,7 +806,7 @@ def generate_rebalance_transactions():
     transaction_count = 0
     
     for target in targets:
-        current_value = allocation.get(target.asset_class, 0)
+        current_value = allocation.get(target.asset_class_id, 0)
         target_value = total_portfolio * target.target_percentage / 100
         difference = target_value - current_value
         
@@ -664,7 +821,7 @@ def generate_rebalance_transactions():
                 transaction = RebalanceTransaction(
                     user_id=current_user.id,
                     account_id=best_account.id,
-                    asset_class=target.asset_class,
+                    asset_class_id=target.asset_class_id,
                     action=action,
                     amount=abs(difference)
                 )
@@ -776,7 +933,7 @@ def api_get_holdings():
                 'currency': holding.currency,
                 'value': holding.market_value,
                 'value_base_currency': holding.market_value_in_base_currency(exchange_rates),
-                'asset_class': holding.asset_class,
+                'asset_class': holding.asset_class.name,
                 'is_public': holding.is_public
             })
     
@@ -855,5 +1012,5 @@ except Exception as e:
 
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, debug=os.getenv('FLASK_ENV') != 'production')
-
+#    app.run(host='0.0.0.0', port=5000, debug=os.getenv('FLASK_ENV') != 'production')
+    app.run(debug=True, host='0.0.0.0', port=5000) 

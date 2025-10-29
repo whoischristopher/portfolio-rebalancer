@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% block title %}Edit Holding{% endblock %}
+{% block content %}
+<h1>Edit Holding</h1>
+
+<form method="POST">
+  <div class="form-group">
+    <label for="account_id">Account</label>
+    <select id="account_id" name="account_id" class="form-control">
+      {% for account in accounts %}
+        <option value="{{ account.id }}" {% if account.id == holding.account_id %}selected{% endif %}>
+          {{ account.name }}
+        </option>
+      {% endfor %}
+    </select>
+  </div>
+
+  <div class="form-group">
+    <label for="security_id">Security</label>
+    <select id="security_id" name="security_id" class="form-control">
+      <option value="">None</option>
+      {% for s in securities %}
+        <option value="{{ s.id }}" {% if s.id == holding.security_id %}selected{% endif %}>
+          {{ s.ticker }} - {{ s.name }}
+        </option>
+      {% endfor %}
+    </select>
+  </div>
+
+  <div class="form-group">
+    <label for="quantity">Quantity</label>
+    <input type="number" step="0.001" id="quantity" name="quantity" value="{{ holding.quantity }}" class="form-control">
+  </div>
+
+  <div class="form-group">
+    <label for="price">Price</label>
+    <input type="number" step="0.01" id="price" name="price" value="{{ holding.price }}" class="form-control">
+  </div>
+
+  <div class="form-group">
+    <label for="asset_class">Asset Class</label>
+      <select id="asset_class_id" name="asset_class_id" class="form-control">
+        {% for ac in asset_classes %}
+          <option value="{{ ac.id }}" {% if security.asset_class_id == ac.id %}selected{% endif %}>
+            {{ ac.name }}
+          </option>
+        {% endfor %}
+      </select>
+
+  </div>
+
+  <div class="form-group">
+    <label for="notes">Notes</label>
+    <textarea id="notes" name="notes" class="form-control">{{ holding.notes or '' }}</textarea>
+  </div>
+
+  <button type="submit" class="btn btn-success">Save Changes</button>
+  <a href="{{ url_for('holdings') }}" class="btn btn-secondary">Cancel</a>
+</form>
+{% endblock %}
+

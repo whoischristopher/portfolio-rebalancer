@@ -8,6 +8,10 @@
 <div class="card">
     <h2>Set Your Target Asset Allocation</h2>
     <p style="color: #7f8c8d; margin-bottom: 1.5rem;">Define the percentage allocation for each asset class with account restrictions. Total should equal 100%.</p>
+
+    <div style="margin-bottom: 1rem;">
+        <a href="{{ url_for('manage_asset_classes') }}" class="btn btn-secondary">Manage Asset Classes</a>
+    </div>
     
     <form method="POST" action="{{ url_for('update_targets') }}">
         <div id="targets-container">
@@ -17,7 +21,16 @@
                     <div style="display: grid; grid-template-columns: 2fr 1fr 1fr; gap: 1rem; margin-bottom: 0.5rem;">
                         <div class="form-group" style="margin-bottom: 0;">
                             <label>Asset Class</label>
-                            <input type="text" name="asset_class_{{ loop.index }}" value="{{ target.asset_class }}" required placeholder="e.g., US Equity">
+                            <div style="display: flex; gap: 0.5rem; align-items: center;">
+                                <select name="asset_class_id_{{ loop.index }}" id="asset_class_select_{{ loop.index }}" required style="flex: 1;">
+                                    {% for ac in asset_classes %}
+                                        <option value="{{ ac.id }}" {% if target.asset_class_id == ac.id %}selected{% endif %}>{{ ac.name }}</option>
+                                    {% endfor %}
+                                    <option value="new">+ Add New Asset Class</option>
+                                </select>
+                                <input type="text" name="new_asset_class_{{ loop.index }}" id="new_asset_class_{{ loop.index }}" placeholder="New asset class name" style="display: none; flex: 1;">
+                            </div>
+
                         </div>
                         <div class="form-group" style="margin-bottom: 0;">
                             <label>Target %</label>
@@ -51,7 +64,16 @@
                     <div style="display: grid; grid-template-columns: 2fr 1fr 1fr; gap: 1rem; margin-bottom: 0.5rem;">
                         <div class="form-group" style="margin-bottom: 0;">
                             <label>Asset Class</label>
-                            <input type="text" name="asset_class_1" required placeholder="e.g., US Equity">
+                             <div style="display: flex; gap: 0.5rem; align-items: center;">
+                                 <select name="asset_class_id_1" id="asset_class_select_1" required style="flex: 1;">
+                                     <option value="">Select Asset Class</option>
+                                     {% for ac in asset_classes %}
+                                         <option value="{{ ac.id }}">{{ ac.name }}</option>
+                                     {% endfor %}
+                                     <option value="new">+ Add New Asset Class</option>
+                                 </select>
+                                 <input type="text" name="new_asset_class_1" id="new_asset_class_1" placeholder="New asset class name" style="display: none; flex: 1;">
+                             </div>
                         </div>
                         <div class="form-group" style="margin-bottom: 0;">
                             <label>Target %</label>
@@ -104,7 +126,7 @@
         <tbody>
             {% for target in targets %}
             <tr>
-                <td><strong>{{ target.asset_class }}</strong></td>
+                <td><strong>{{ target.asset_class.name }}</strong></td>
                 <td class="text-right">{{ "%.1f"|format(target.target_percentage) }}%</td>
                 <td>{{ target.preferred_account_type or '-' }}</td>
                 <td style="font-size: 0.85rem;">
@@ -143,7 +165,16 @@ function addTargetRow() {
         <div style="display: grid; grid-template-columns: 2fr 1fr 1fr; gap: 1rem; margin-bottom: 0.5rem;">
             <div class="form-group" style="margin-bottom: 0;">
                 <label>Asset Class</label>
-                <input type="text" name="asset_class_${targetCounter}" required placeholder="e.g., Bonds">
+                <div style="display: flex; gap: 0.5rem; align-items: center;">
+                    <select name="asset_class_id_${targetCounter}" id="asset_class_select_${targetCounter}" required style="flex: 1;">
+                        <option value="">Select Asset Class</option>
+                        {% for ac in asset_classes %}
+                            <option value="{{ ac.id }}">{{ ac.name }}</option>
+                        {% endfor %}
+                        <option value="new">+ Add New Asset Class</option>
+                    </select>
+                    <input type="text" name="new_asset_class_${targetCounter}" id="new_asset_class_${targetCounter}" placeholder="New asset class name" style="display: none; flex: 1;">
+                </div>
             </div>
             <div class="form-group" style="margin-bottom: 0;">
                 <label>Target %</label>
@@ -173,6 +204,27 @@ function addTargetRow() {
     `;
     container.appendChild(row);
 }
+
+// Handle "Add New" asset class selection
+document.addEventListener('change', function(e) {
+    if (e.target.name && e.target.name.startsWith('asset_class_id_')) {
+        const index = e.target.name.split('_').pop();
+        const selectElem = document.getElementById('asset_class_select_' + index);
+        const inputElem = document.getElementById('new_asset_class_' + index);
+        
+        if (selectElem && inputElem) {
+            if (selectElem.value === 'new') {
+                inputElem.style.display = 'block';
+                inputElem.required = true;
+                selectElem.required = false;
+            } else {
+                inputElem.style.display = 'none';
+                inputElem.required = false;
+                selectElem.required = true;
+            }
+        }
+    }
+});
 </script>
 {% endblock %}
 

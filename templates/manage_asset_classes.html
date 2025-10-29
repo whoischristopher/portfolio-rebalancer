@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+
+{% block title %}Manage Asset Classes - Portfolio Rebalancer{% endblock %}
+
+{% block content %}
+<h1 style="margin-bottom: 2rem;">Manage Asset Classes</h1>
+
+<!-- Add New Asset Class -->
+<div class="card">
+    <h2>Add New Asset Class</h2>
+    <form method="POST">
+        <input type="hidden" name="action" value="add">
+        <div style="display: flex; gap: 1rem; align-items: flex-end;">
+            <div class="form-group" style="flex: 1; margin-bottom: 0;">
+                <label for="name">Asset Class Name</label>
+                <input type="text" name="name" id="name" required placeholder="e.g., Emerging Markets">
+            </div>
+            <button type="submit" class="btn btn-primary">Add Asset Class</button>
+        </div>
+    </form>
+</div>
+
+<!-- List of Existing Asset Classes -->
+<div class="card">
+    <h2>Existing Asset Classes</h2>
+    {% if asset_classes %}
+    <table>
+        <thead>
+            <tr>
+                <th>Name</th>
+                <th>Used By</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for ac in asset_classes %}
+            <tr>
+                <td><strong>{{ ac.name }}</strong></td>
+                <td style="font-size: 0.9rem; color: #7f8c8d;">
+                    {{ ac.targets|length }} targets, 
+                    {{ ac.holdings|length }} holdings, 
+                    {{ ac.securities|length }} securities
+                </td>
+                <td>
+                    <form method="POST" style="display: inline;">
+                        <input type="hidden" name="action" value="delete">
+                        <input type="hidden" name="asset_class_id" value="{{ ac.id }}">
+                        <button type="submit" class="btn btn-danger" 
+                                onclick="return confirm('Are you sure you want to delete {{ ac.name }}?')">
+                            Delete
+                        </button>
+                    </form>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p style="color: #7f8c8d;">No asset classes defined yet. Add one above to get started.</p>
+    {% endif %}
+</div>
+
+<div style="margin-top: 1rem;">
+    <a href="{{ url_for('targets') }}" class="btn btn-secondary">Back to Targets</a>
+</div>
+{% endblock %}

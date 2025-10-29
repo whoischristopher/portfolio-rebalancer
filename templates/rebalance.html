@@ -26,7 +26,7 @@
         <tbody>
             {% for row in rebalance_data %}
             <tr>
-                <td><strong>{{ row.asset_class }}</strong></td>
+                <td><strong>{{ row.asset_class.name }}</strong></td>
                 <td class="text-right">{{ "%.1f"|format(row.current_pct) }}%</td>
                 <td class="text-right">{{ "%.1f"|format(row.target_pct) }}%</td>
                 <td class="text-right {% if row.difference < 0 %}negative{% elif row.difference > 0 %}positive{% endif %}">
