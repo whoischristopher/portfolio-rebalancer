@@ -1,7 +1,7 @@
 Disclaimer:
 This project has been constructed mostly through vibe-coding with no manual code review.  No warranty is implied - use as it is.   
 
-This is a rudimentary attempt at a simple web application that will help rebalance a stock portfolio against a desired asset allocation target.
+This is an attempt at a simple web application that will help rebalance a equity portfolio against a desired asset allocation target.
 
 Key features:
 - Google OAuth authentication
