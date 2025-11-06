@@ -14,7 +14,7 @@ Key features:
 To be implemented:
 - Taking tax implication into consideration for rebalancing
 - Fix security price update
-- Fix rebalancing logic
+- Improve rebalancing logic
 
 Installation:
 
