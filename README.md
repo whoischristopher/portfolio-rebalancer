@@ -11,13 +11,35 @@ Key features:
 - Asset Allocation targets
 - Rebalance against the targets
 
-To be implemented:
-- Taking tax implication into consideration for rebalancing
-- Fix security price update
-- Improve rebalancing logic
+✅ What the Algorithm Does:
+- Portfolio-Level Rebalancing: Identifies overweight and underweight asset classes across your entire portfolio
+- Account-Matched Trading: Sells and buys happen in the same account to avoid contribution limit issues
+- Existing Position Preference: Prefers adding to existing holdings over creating new positions in an account
+- Balanced Threshold: Only rebalances asset classes that deviate more than 0.50% from target (configurable in Settings)
+- Security Restrictions: Respects per-security account restrictions (configured on Securities page)
+- Fractional Shares: Final trade per account uses fractional shares to minimize leftover cash
+
+🎯 How It Chooses What to Buy:
+- Find Best Account: Prioritizes accounts with existing holdings AND sellable overweight positions
+- Generate Sells First: Sells overweight positions in that account to generate cash
+- Generate Buys: Uses the generated cash to buy underweight positions
+- Prefer Existing Securities: Adds to positions you already own when possible
+
+🔄 Transaction Sequencing:
+- Account Grouping: All sells and buys for an account are grouped together
+- Sell First: Sells execute first to generate cash
+- Buy Second: Buys execute using the generated cash
+- No Cross-Account Transfers: Each account is self-contained
+
+⚠️ What the Algorithm Does NOT Do (Yet):
+- Cross-Account Cash Transfers: Doesn't move money between accounts (respects contribution limits)
+- Tax-Loss Harvesting: Doesn't identify losing positions to offset gains
+- Wash Sale Awareness: Doesn't avoid repurchasing securities sold at a loss within 30 days
+- Cost Basis Tracking: Doesn't track purchase prices or holding periods for capital gains
+- Long-term vs Short-term Gains: Doesn't consider holding periods for preferential tax treatment
+- Specific Lot Selection: Doesn't let you choose which shares to sell (FIFO, LIFO, etc.)
 
 Installation:
-
 - Clone/pull the code
 - Implement Google OAuth and obtain your Google_Client ID and Secret
 - Create docker-compose.yml (using sample beblow and modify as necessary), and off you go.
