@@ -2,73 +2,296 @@
 {% block title %}Rebalance - Portfolio Rebalancer{% endblock %}
 
 {% block content %}
-<h1 style="margin-bottom: 2rem;">Rebalance Recommendations</h1>
+<h1 style="margin-bottom: 2rem;">Rebalance Plan</h1>
 
-{% if rebalance_data %}
 <div class="card">
     <h2>Portfolio Summary</h2>
-    <p style="font-size: 1.5rem; color: #2c3e50;"><strong>Total Portfolio Value:</strong> {{ base_currency }} ${{ "%.2f"|format(total_portfolio) }}</p>
+    <p style="font-size: 1.5rem; color: #2c3e50;"><strong>Total Portfolio Value:</strong> {{ base_currency }} ${{ "{:,.2f}".format(total_portfolio) }}</p>
+    
+    <form method="POST" action="{{ url_for('generate_rebalance') }}" style="margin-top: 1rem;">
+        <button type="submit" class="btn btn-primary">Generate Rebalance Plan</button>
+    </form>
 </div>
 
+<!-- REBALANCING ALGORITHM DOCUMENTATION -->
+<div class="card" style="background: #f8f9fa; border-left: 4px solid #3498db;">
+    <div style="display: flex; justify-content: space-between; align-items: center; cursor: pointer;" onclick="toggleRebalancingInfo()">
+        <h3 style="color: #2c3e50; margin: 0;">📘 How Rebalancing Works</h3>
+        <button type="button" class="btn btn-sm" id="toggleRebalancingBtn" style="background: transparent; border: 1px solid #3498db; color: #3498db;">
+            Show Details
+        </button>
+    </div>
+    
+    <div id="rebalancingDetails" style="display: none; margin-top: 1rem;">
+        <div style="margin-bottom: 1.5rem;">
+            <h4 style="color: #2c3e50; font-size: 1rem; margin-bottom: 0.5rem;">✅ What the Algorithm Does:</h4>
+            <ul style="margin: 0; padding-left: 1.5rem; color: #555;">
+                <li><strong>Portfolio-Level Rebalancing:</strong> Identifies overweight and underweight asset classes across your entire portfolio</li>
+                <li><strong>Account-Matched Trading:</strong> Sells and buys happen in the same account to avoid contribution limit issues</li>
+                <li><strong>Existing Position Preference:</strong> Prefers adding to existing holdings over creating new positions in an account</li>
+                <li><strong>Balanced Threshold:</strong> Only rebalances asset classes that deviate more than {{ "%.2f"|format(balanced_threshold) }}% from target (configurable in Settings)</li>
+                <li><strong>Security Restrictions:</strong> Respects per-security account restrictions (configured on Securities page)</li>
+                <li><strong>Fractional Shares:</strong> Final trade per account uses fractional shares to minimize leftover cash</li>
+            </ul>
+        </div>
+        
+        <div style="margin-bottom: 1.5rem;">
+            <h4 style="color: #2c3e50; font-size: 1rem; margin-bottom: 0.5rem;">🎯 How It Chooses What to Buy:</h4>
+            <ol style="margin: 0; padding-left: 1.5rem; color: #555;">
+                <li><strong>Find Best Account:</strong> Prioritizes accounts with existing holdings AND sellable overweight positions</li>
+                <li><strong>Generate Sells First:</strong> Sells overweight positions in that account to generate cash</li>
+                <li><strong>Generate Buys:</strong> Uses the generated cash to buy underweight positions</li>
+                <li><strong>Prefer Existing Securities:</strong> Adds to positions you already own when possible</li>
+            </ol>
+        </div>
+        
+        <div style="margin-bottom: 1.5rem;">
+            <h4 style="color: #2c3e50; font-size: 1rem; margin-bottom: 0.5rem;">🔄 Transaction Sequencing:</h4>
+            <ol style="margin: 0; padding-left: 1.5rem; color: #555;">
+                <li><strong>Account Grouping:</strong> All sells and buys for an account are grouped together</li>
+                <li><strong>Sell First:</strong> Sells execute first to generate cash</li>
+                <li><strong>Buy Second:</strong> Buys execute using the generated cash</li>
+                <li><strong>No Cross-Account Transfers:</strong> Each account is self-contained</li>
+            </ol>
+        </div>
+        
+        <div>
+            <h4 style="color: #e67e22; font-size: 1rem; margin-bottom: 0.5rem;">⚠️ What the Algorithm Does NOT Do (Yet):</h4>
+            <ul style="margin: 0; padding-left: 1.5rem; color: #555;">
+                <li><strong>Cross-Account Cash Transfers:</strong> Doesn't move money between accounts (respects contribution limits)</li>
+                <li><strong>Tax-Loss Harvesting:</strong> Doesn't identify losing positions to offset gains</li>
+                <li><strong>Wash Sale Awareness:</strong> Doesn't avoid repurchasing securities sold at a loss within 30 days</li>
+                <li><strong>Cost Basis Tracking:</strong> Doesn't track purchase prices or holding periods for capital gains</li>
+                <li><strong>Long-term vs Short-term Gains:</strong> Doesn't consider holding periods for preferential tax treatment</li>
+                <li><strong>Specific Lot Selection:</strong> Doesn't let you choose which shares to sell (FIFO, LIFO, etc.)</li>
+            </ul>
+        </div>
+        
+        <div style="margin-top: 1rem; padding: 0.75rem; background: white; border-radius: 4px; font-size: 0.9rem;">
+            <strong>💡 Pro Tip:</strong> Since rebalancing happens within each account, make sure each account has some cash or overweight positions to sell. You cannot fund purchases in one account by selling from another.
+        </div>
+    </div>
+</div>
+
+<script>
+function toggleRebalancingInfo() {
+    const details = document.getElementById('rebalancingDetails');
+    const btn = document.getElementById('toggleRebalancingBtn');
+    
+    if (details.style.display === 'none') {
+        details.style.display = 'block';
+        btn.textContent = 'Hide Details';
+    } else {
+        details.style.display = 'none';
+        btn.textContent = 'Show Details';
+    }
+}
+</script>
+
+<!-- CURRENT VS TARGET ALLOCATION SNAPSHOT -->
+{% if comparison_data %}
 <div class="card">
-    <h2>Rebalancing Actions</h2>
+    <h2>Current vs Target Allocation</h2>
     <table>
         <thead>
             <tr>
                 <th>Asset Class</th>
+                <th class="text-right">Current Value</th>
                 <th class="text-right">Current %</th>
                 <th class="text-right">Target %</th>
                 <th class="text-right">Difference</th>
-                <th>Action</th>
-                <th>Recommended Account</th>
+                <th>Status</th>
             </tr>
         </thead>
         <tbody>
-            {% for row in rebalance_data %}
+            {% for item in comparison_data %}
             <tr>
-                <td><strong>{{ row.asset_class.name }}</strong></td>
-                <td class="text-right">{{ "%.1f"|format(row.current_pct) }}%</td>
-                <td class="text-right">{{ "%.1f"|format(row.target_pct) }}%</td>
-                <td class="text-right {% if row.difference < 0 %}negative{% elif row.difference > 0 %}positive{% endif %}">
-                    ${{ "%.2f"|format(row.difference|abs) }}
-                </td>
-                <td>
-                    {% if row.action %}
-                        {% if row.action == 'BUY' %}
-                        <span class="positive"><strong>BUY</strong></span>
-                        {% else %}
-                        <span class="negative"><strong>SELL</strong></span>
-                        {% endif %}
+                <td><strong>{{ item.asset_class_name }}</strong></td>
+                <td class="text-right">{{ base_currency }} ${{ "{:,.2f}".format(item.current_value) }}</td>
+                <td class="text-right">{{ "%.2f"|format(item.current_pct) }}%</td>
+                <td class="text-right">{{ "%.2f"|format(item.target_pct) }}%</td>
+                <td class="text-right">
+                    {% if item.difference > balanced_threshold %}
+                        <span class="negative">+{{ "%.2f"|format(item.difference) }}%</span>
+                    {% elif item.difference < -balanced_threshold %}
+                        <span class="positive">{{ "%.2f"|format(item.difference) }}%</span>
                     {% else %}
-                    <span style="color: #7f8c8d;">HOLD</span>
+                        <span style="color: #7f8c8d;">{{ "%.2f"|format(item.difference) }}%</span>
                     {% endif %}
                 </td>
                 <td>
-                    {{ row.preferred_account.name if row.preferred_account else '—' }}
+                    {% if item.difference > balanced_threshold %}
+                        <span style="background: #e74c3c; color: white; padding: 0.25rem 0.5rem; border-radius: 4px; font-size: 0.85rem;">Overweight</span>
+                    {% elif item.difference < -balanced_threshold %}
+                        <span style="background: #3498db; color: white; padding: 0.25rem 0.5rem; border-radius: 4px; font-size: 0.85rem;">Underweight</span>
+                    {% else %}
+                        <span style="background: #27ae60; color: white; padding: 0.25rem 0.5rem; border-radius: 4px; font-size: 0.85rem;">Balanced</span>
+                    {% endif %}
                 </td>
             </tr>
             {% endfor %}
+            
+            <tr style="background: #f8f9fa; font-weight: bold; border-top: 2px solid #ddd;">
+                <td>Total</td>
+                <td class="text-right">{{ base_currency }} ${{ "{:,.2f}".format(total_portfolio) }}</td>
+                <td class="text-right">{{ "%.2f"|format(comparison_data|sum(attribute='current_pct')) }}%</td>
+                <td class="text-right">{{ "%.2f"|format(comparison_data|sum(attribute='target_pct')) }}%</td>
+                <td colspan="2"></td>
+            </tr>
         </tbody>
     </table>
 </div>
+{% endif %}
+<!-- END ALLOCATION SNAPSHOT -->
 
-<form method="POST" action="{{ url_for('generate_rebalance_transactions') }}" style="margin-top: 1.5rem;">
-    <button type="submit" class="btn btn-success">Generate Recommended Transactions</button>
-</form>
+{% if transactions %}
+<div class="card">
+    <h2>Rebalance Transactions</h2>
+    <p style="color: #7f8c8d; margin-bottom: 1rem;">Execute these transactions in order. The plan will refresh after each execution.</p>
+    
+    <table>
+        <thead>
+            <tr>
+                <th style="width: 5%;">Order</th>
+                <th>Action</th>
+                <th>Account</th>
+                <th>Security</th>
+                <th class="text-right">Quantity</th>
+                <th class="text-right">Price</th>
+                <th class="text-right">Amount</th>
+                <th style="width: 10%;">Execute</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for txn in transactions %}
+            <tr>
+                <td class="text-center"><strong>{{ txn.execution_order }}</strong></td>
+                <td>
+                    {% if txn.action == 'SELL' %}
+                        <span class="negative"><strong>SELL</strong></span>
+                    {% else %}
+                        <span class="positive"><strong>BUY</strong></span>
+                    {% endif %}
+                </td>
+                <td>{{ txn.account.name }}</td>
+                <td>
+                    {% if txn.requires_user_selection %}
+                        <form method="POST" action="{{ url_for('execute_rebalance_transaction', transaction_id=txn.id) }}" style="display: inline;">
+                            <select name="security_id" required style="padding: 0.3rem;">
+                                <option value="">-- Select Security --</option>
+                                {% for sec_id in txn.available_securities %}
+                                    {% set sec = securities|selectattr('id', 'equalto', sec_id)|first %}
+                                    <option value="{{ sec.id }}">{{ sec.ticker }} - {{ sec.name }}</option>
+                                {% endfor %}
+                            </select>
+                        </form>
+                    {% else %}
+                        <strong>{{ txn.security.ticker }}</strong>
+                        <br><span style="font-size: 0.85rem; color: #7f8c8d;">{{ txn.security.name }}</span>
+                    {% endif %}
+                </td>
+                <td class="text-right">
+                    {% if not txn.requires_user_selection %}
+                        {{ "%.4f"|format(txn.quantity) }}
+                        {% if txn.is_final_trade %}
+                            <span style="color: #f39c12;" title="Final trade - uses fractional shares">*</span>
+                        {% endif %}
+                    {% else %}
+                        —
+                    {% endif %}
+                </td>
+                <td class="text-right">
+                    {% if not txn.requires_user_selection %}
+                        {{ txn.currency }} ${{ "{:,.2f}".format(txn.price) }}
+                    {% else %}
+                        —
+                    {% endif %}
+                </td>
+                <td class="text-right">
+                    <strong>{{ txn.currency }} ${{ "{:,.2f}".format(txn.amount) }}</strong>
+                </td>
+                <td class="text-center">
+                    {% if txn.requires_user_selection %}
+                        <button type="submit" form="select-form-{{ txn.id }}" class="btn btn-sm btn-primary">Select & Execute</button>
+                    {% else %}
+                        <form method="POST" action="{{ url_for('execute_rebalance_transaction', transaction_id=txn.id) }}" style="display: inline;">
+                            <button type="submit" class="btn btn-sm btn-success" onclick="return confirm('Execute this transaction?');">
+                                ✓ Execute
+                            </button>
+                        </form>
+                    {% endif %}
+                </td>
+            </tr>
+            
+            {% if txn.requires_user_selection %}
+            <!-- Hidden form for submit -->
+            <form id="select-form-{{ txn.id }}" method="POST" action="{{ url_for('execute_rebalance_transaction', transaction_id=txn.id) }}" style="display: none;">
+                <input type="hidden" name="security_id" id="hidden-security-{{ txn.id }}">
+            </form>
+            <script>
+                document.querySelector('select[name="security_id"]').addEventListener('change', function() {
+                    document.getElementById('hidden-security-{{ txn.id }}').value = this.value;
+                });
+            </script>
+            {% endif %}
+            {% endfor %}
+        </tbody>
+    </table>
+    
+    <div style="margin-top: 1rem; padding: 1rem; background: #f8f9fa; border-radius: 4px;">
+        <p style="margin: 0; font-size: 0.9rem; color: #7f8c8d;">
+            <strong>Note:</strong> Transactions marked with * use fractional shares to leave zero cash balance (final trades per account).
+        </p>
+    </div>
+</div>
 
 {% else %}
 <div class="card">
-    <p style="color: #7f8c8d;">No rebalancing data available. Make sure the following conditions are met:</p>
-    <ul style="margin-top: 1rem; color: #7f8c8d;">
-        <li>At least one account with holdings</li>
-        <li>Configured target allocations</li>
-        <li>Exchange rates available for currency conversion</li>
-    </ul>
-    <div style="margin-top: 2rem;">
-        <a href="{{ url_for('accounts') }}" class="btn btn-primary">Manage Accounts</a>
-        <a href="{{ url_for('targets') }}" class="btn btn-primary">Set Targets</a>
-    </div>
+    {% if comparison_data %}
+        <!-- Check if portfolio is balanced -->
+        {% set max_diff = 0 %}
+        {% for item in comparison_data %}
+            {% if item.difference|abs > max_diff %}
+                {% set max_diff = item.difference|abs %}
+            {% endif %}
+        {% endfor %}
+        
+        {% if max_diff <= balanced_threshold %}
+            <!-- Portfolio is balanced -->
+            <div style="text-align: center; padding: 2rem;">
+                <span style="font-size: 3rem; color: #27ae60;">✓</span>
+                <h2 style="color: #27ae60; margin-top: 1rem;">Portfolio is Balanced!</h2>
+                <p style="color: #7f8c8d; margin-top: 1rem; font-size: 1.1rem;">
+                    All asset classes are within {{ "%.2f"|format(balanced_threshold) }}% of target. No rebalancing needed.
+                </p>
+            </div>
+        {% else %}
+            <!-- Portfolio exists but no plan generated yet -->
+            <p style="color: #7f8c8d;">No rebalance plan generated yet. Click "Generate Rebalance Plan" above to create one.</p>
+        {% endif %}
+    {% else %}
+        <!-- No portfolio data at all -->
+        <p style="color: #7f8c8d;">No rebalance plan available. Click "Generate Rebalance Plan" to create one.</p>
+        <ul style="margin-top: 1rem; color: #7f8c8d;">
+            <li>Ensure you have accounts with holdings</li>
+            <li>Set target allocations</li>
+            <li>Update cash balances in Holdings page</li>
+            <li>Update prices from market</li>
+        </ul>
+        <div style="margin-top: 2rem;">
+            <a href="{{ url_for('accounts') }}" class="btn btn-primary">Manage Accounts</a>
+            <a href="{{ url_for('targets') }}" class="btn btn-primary">Set Targets</a>
+            <a href="{{ url_for('holdings') }}" class="btn btn-primary">View Holdings</a>
+        </div>
+    {% endif %}
 </div>
 {% endif %}
+
+<style>
+.btn-sm {
+    padding: 0.4rem 0.8rem;
+    font-size: 0.85rem;
+}
+</style>
 {% endblock %}
 

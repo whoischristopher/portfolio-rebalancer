@@ -29,10 +29,41 @@
                 <td>{{ s.name }}</td>
                 <td>{{ s.asset_class.name if s.asset_class else '-' }}</td>
                 <td>{{ s.currency }}</td>
-                <td>
+                <td style="font-size: 0.85rem;">
                     {% set pref = preferences.get(s.id) %}
                     {% if pref %}
-                        <span class="badge">{{ pref.restriction_type|replace('_', ' ')|title }}</span>
+                        {% if pref.restriction_type == 'unrestricted' %}
+                            <span class="badge" style="background: #27ae60; color: white; padding: 0.25rem 0.5rem; border-radius: 4px;">Unrestricted</span>
+                        {% elif pref.restriction_type == 'restricted_to_accounts' %}
+                            <span class="badge" style="background: #e74c3c; color: white; padding: 0.25rem 0.5rem; border-radius: 4px;">Restricted</span>
+                            {% if pref.account_config and pref.account_config.allowed %}
+                                <div style="margin-top: 0.25rem; color: #555; font-size: 0.75rem;">
+                                    Only: 
+                                    {% for acc_id in pref.account_config.allowed %}
+                                        {% set acc = accounts|selectattr('id', 'equalto', acc_id)|first %}
+                                        {{ acc.name if acc }}{% if not loop.last %}, {% endif %}
+                                    {% endfor %}
+                                </div>
+                            {% endif %}
+                        {% elif pref.restriction_type == 'prioritized_accounts' %}
+                            <span class="badge" style="background: #f39c12; color: white; padding: 0.25rem 0.5rem; border-radius: 4px;">Prioritized</span>
+                            {% if pref.account_config %}
+                                <div style="margin-top: 0.25rem; color: #555; font-size: 0.75rem;">
+                                    {% if pref.account_config.priority_1 %}
+                                        P1: 
+                                        {% for acc_id in pref.account_config.priority_1 %}
+                                            {% set acc = accounts|selectattr('id', 'equalto', acc_id)|first %}
+                                            {{ acc.name if acc }}{% if not loop.last %}, {% endif %}
+                                        {% endfor %}
+                                    {% endif %}
+                                </div>
+                            {% endif %}
+                        {% endif %}
+                        {% if pref.notes %}
+                            <div style="margin-top: 0.25rem; font-style: italic; color: #7f8c8d; font-size: 0.7rem;">
+                                {{ pref.notes[:30] }}{% if pref.notes|length > 30 %}...{% endif %}
+                            </div>
+                        {% endif %}
                     {% else %}
                         <span style="color: #95a5a6;">Not set</span>
                     {% endif %}

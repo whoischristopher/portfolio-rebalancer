@@ -10,7 +10,7 @@
     <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 2rem; margin-top: 1.5rem;">
         <div>
             <h3 style="color: #7f8c8d; font-size: 0.9rem; font-weight: normal;">Total Value</h3>
-            <p style="font-size: 2rem; color: #2c3e50; font-weight: bold;">${{ "%.2f"|format(total_value) }}</p>
+            <p style="font-size: 2rem; color: #2c3e50; font-weight: bold;">${{ "{:,.2f}".format(total_value) }}</p>
         </div>
         <div>
             <h3 style="color: #7f8c8d; font-size: 0.9rem; font-weight: normal;">Accounts</h3>
@@ -41,7 +41,7 @@
                 <td><strong>{{ account.name }}</strong></td>
                 <td>{{ account.account_type or 'N/A' }}</td>
                 <td>{{ account.holdings|length }}</td>
-                <td>${{ "%.2f"|format(account.holdings|sum(attribute='market_value')) }}</td>
+                <td>{{ base_currency }} ${{ "{:,.2f}".format(account.total_value_in_base_currency(exchange_rates)) }}</td>
             </tr>
             {% endfor %}
         </tbody>

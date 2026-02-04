@@ -6,6 +6,9 @@ import yfinance as yf
 from datetime import datetime, timedelta
 from collections import defaultdict
 from sqlalchemy import inspect
+import json
+from google.oauth2.credentials import Credentials
+from googleapiclient.discovery import build
 
 app = Flask(__name__)
 
@@ -45,114 +48,464 @@ app.register_blueprint(auth_bp, url_prefix='/auth')
 # UTILITY FUNCTIONS
 # ============================================================================
 
-def get_exchange_rates(user):
-    '''Get current exchange rates for user's currencies'''
-    rates = {}
-    base = user.base_currency
-    
-    # Get latest rates from database (within last 24 hours)
-    recent_rates = ExchangeRate.query.filter(
-        ExchangeRate.date >= datetime.utcnow() - timedelta(days=1)
-    ).all()
-    
-    for rate in recent_rates:
-        key = f"{rate.from_currency}_TO_{rate.to_currency}"
-        rates[key] = rate.rate
-    
-    # Add default rates if missing
-    if 'USD_TO_CAD' not in rates:
-        rates['USD_TO_CAD'] = 1.35  # Default fallback
-    if 'CAD_TO_USD' not in rates:
-        rates['CAD_TO_USD'] = 1 / rates.get('USD_TO_CAD', 1.35)
-    
-    return rates
-
-
-def update_prices_from_yfinance(holdings):
-    '''Update holding prices using yFinance'''
-    updated_count = 0
-    
-    for holding in holdings:
-        if not holding.auto_update_price or not holding.is_public:
-            continue
-        
-        try:
-            # Get ticker data
-            ticker = yf.Ticker(holding.ticker)
-            info = ticker.info
-            
-            # Get current price
-            price = info.get('currentPrice') or info.get('regularMarketPrice')
-            
-            if price:
-                holding.price = float(price)
-                holding.last_price_update = datetime.utcnow()
-                holding.name = info.get('longName', holding.name)
-                updated_count += 1
-        
-        except Exception as e:
-            print(f"Error updating {holding.ticker}: {e}")
-            continue
-    
-    if updated_count > 0:
-        db.session.commit()
-    
-    return updated_count
-
-
 def fetch_exchange_rate(from_curr, to_curr):
-    '''Fetch current exchange rate using yFinance'''
+    '''Fetch current exchange rate with caching'''
     try:
         if from_curr == to_curr:
             return 1.0
         
-        pair = f"{from_curr}{to_curr}=X"
-        ticker = yf.Ticker(pair)
-        data = ticker.history(period='1d')
+        # Check for recent cached rate (less than 4 hours old)
+        cached_rate = ExchangeRate.query.filter_by(
+            from_currency=from_curr,
+            to_currency=to_curr
+        ).order_by(ExchangeRate.date.desc()).first()
         
-        if not data.empty:
-            rate = float(data['Close'].iloc[-1])
+        if cached_rate and (datetime.utcnow() - cached_rate.date).total_seconds() < 14400:  # 4 hours
+            return cached_rate.rate
+        
+        # Try exchangerate-api.com (free, no key needed for basic usage)
+        import requests
+        url = f"https://api.exchangerate-api.com/v4/latest/{from_curr}"
+        response = requests.get(url, timeout=10)
+        
+        if response.status_code == 200:
+            data = response.json()
+            if to_curr in data['rates']:
+                rate = float(data['rates'][to_curr])
+                
+                # Delete old rates
+                ExchangeRate.query.filter_by(
+                    from_currency=from_curr,
+                    to_currency=to_curr
+                ).delete()
+                
+                # Save new rate
+                exchange_rate = ExchangeRate(
+                    from_currency=from_curr,
+                    to_currency=to_curr,
+                    rate=rate,
+                    source='exchangerate-api',
+                    date=datetime.utcnow()
+                )
+                db.session.add(exchange_rate)
+                db.session.commit()
+                
+                return rate
+        
+        # Fallback to cached if API fails
+        if cached_rate:
+            return cached_rate.rate
             
-            # Save to database
-            exchange_rate = ExchangeRate(
-                from_currency=from_curr,
-                to_currency=to_curr,
-                rate=rate,
-                source='yfinance'
-            )
-            db.session.add(exchange_rate)
-            db.session.commit()
-            
-            return rate
+        return 1.35  # Last resort
+        
     except Exception as e:
-        print(f"Error fetching exchange rate {from_curr}/{to_curr}: {e}")
-    
-    # Fallback to approximate rate
-    if from_curr == 'USD' and to_curr == 'CAD':
+        print(f"Error fetching exchange rate: {e}")
+        if cached_rate:
+            return cached_rate.rate
         return 1.35
-    elif from_curr == 'CAD' and to_curr == 'USD':
-        return 0.74
-    
-    return 1.0
 
+def get_exchange_rates(user):
+    '''Get current exchange rates for user's currencies'''
+    rates = {}
+    
+    # Use fetch_exchange_rate to get fresh rates (with caching)
+    try:
+        usd_to_cad = fetch_exchange_rate('USD', 'CAD')
+        rates['USD_TO_CAD'] = usd_to_cad
+        rates['CAD_TO_USD'] = 1 / usd_to_cad
+    except Exception as e:
+        print(f"Error fetching USD/CAD rate: {e}")
+        rates['USD_TO_CAD'] = 1.35
+        rates['CAD_TO_USD'] = 1 / 1.35
+    
+    return rates
 
 def calculate_portfolio_allocation(user, exchange_rates):
-    '''Calculate current portfolio allocation by asset class'''
+    """Calculate current portfolio allocation by asset class (keyed by asset_class_id)."""
     allocation = defaultdict(float)
     total_value = 0
-    
+
     for account in user.accounts:
         for holding in account.holdings:
             value = holding.market_value_in_base_currency(exchange_rates)
-            allocation[holding.asset_class.name] += value
+            if holding.asset_class_id is None:
+                continue  # or handle unclassified holdings separately
+            allocation[holding.asset_class_id] += value
             total_value += value
-    
+
     # Convert to percentages
     allocation_pct = {}
-    for asset_class, value in allocation.items():
-        allocation_pct[asset_class] = (value / total_value * 100) if total_value > 0 else 0
-    
+    for asset_class_id, value in allocation.items():
+        allocation_pct[asset_class_id] = (value / total_value * 100) if total_value > 0 else 0
+
     return allocation, allocation_pct, total_value
+
+
+def fetch_prices_from_user_sheet(user):
+    """Read prices from the user's Google Sheet using their OAuth token."""
+    
+    if not user.google_token or not user.price_sheet_id:
+        return {}
+    
+    try:
+        token_dict = json.loads(user.google_token)
+        
+        creds = Credentials(
+            token=token_dict['access_token'],
+            refresh_token=token_dict.get('refresh_token'),
+            token_uri='https://oauth2.googleapis.com/token',
+            client_id=os.getenv('GOOGLE_CLIENT_ID'),
+            client_secret=os.getenv('GOOGLE_CLIENT_SECRET'),
+            scopes=['https://www.googleapis.com/auth/spreadsheets.readonly']
+        )
+        
+        service = build('sheets', 'v4', credentials=creds)
+        
+        # Read range A1:B (ticker in A, price from GOOGLEFINANCE in B)
+        result = service.spreadsheets().values().get(
+            spreadsheetId=user.price_sheet_id,
+            range='Sheet1!A1:B'
+        ).execute()
+        
+        rows = result.get('values', [])
+        
+        prices = {}
+
+        for row in rows:
+            if len(row) >= 2 and row[0]:
+                try:
+                    value = float(row[1])
+                    prices[row[0]] = value
+                except (ValueError, TypeError):
+                    pass
+        
+        return prices
+        
+    except Exception as e:
+        print(f"Error reading user sheet: {e}")
+        return {}
+
+
+def calculate_asset_class_deltas(user, exchange_rates):
+    """Calculate dollar and percentage differences from target allocation"""
+    allocation, allocation_pct, total_portfolio = calculate_portfolio_allocation(user, exchange_rates)
+    targets = Target.query.filter_by(user_id=user.id).all()
+    
+    deltas = []
+    for target in targets:
+        current_value = allocation.get(target.asset_class_id, 0)
+        current_pct = allocation_pct.get(target.asset_class_id, 0)
+        target_value = total_portfolio * target.target_percentage / 100
+        dollar_diff = target_value - current_value
+        percentage_diff = current_pct - target.target_percentage
+        
+        deltas.append({
+            'asset_class_id': target.asset_class_id,
+            'asset_class_name': target.asset_class.name,
+            'target': target,
+            'current_value': current_value,
+            'target_value': target_value,
+            'dollar_diff': dollar_diff,
+            'percentage_diff': percentage_diff,
+            'current_pct': current_pct,
+            'target_pct': target.target_percentage
+        })
+    
+    return deltas, total_portfolio
+
+
+def get_eligible_securities_for_account(asset_class_id, account, user):
+    """Get securities that can be held in the specified account"""
+    securities = Security.query.filter_by(asset_class_id=asset_class_id).all()
+    prefs = {pref.security_id: pref for pref in SecurityPreference.query.filter_by(user_id=user.id).all()}
+    
+    eligible = []
+    for security in securities:
+        pref = prefs.get(security.id)
+        
+        # Check restrictions
+        if not pref or pref.restriction_type == 'unrestricted':
+            eligible.append(security)
+        elif pref.restriction_type == 'restricted_to_accounts':
+            allowed_ids = pref.account_config.get('allowed', []) if pref.account_config else []
+            if account.id in allowed_ids:
+                eligible.append(security)
+        elif pref.restriction_type == 'prioritized_accounts':
+            # Prioritized means allowed everywhere, just with preferences
+            eligible.append(security)
+    
+    return eligible
+
+
+def prioritize_accounts_for_sell(accounts, prefer_registered=True):
+    """Sort accounts for selling - registered first for tax efficiency"""
+    sorted_accounts = sorted(accounts, key=lambda a: (
+        not a.is_registered if prefer_registered else a.is_registered,
+        -a.priority
+    ))
+    return sorted_accounts
+
+def generate_rebalance_transactions(user):
+    """Generate minimal rebalance transactions at portfolio level
+    
+    Simple Approach:
+    - Calculate portfolio-level imbalances
+    - For each underweight asset class, find best account to buy it
+    - Generate sells in that same account to fund the buy
+    - Minimize transactions by being selective about what to rebalance
+    """
+        
+    # REFRESH PRICES FIRST
+    try:
+        prices = fetch_prices_from_user_sheet(user)
+        
+        if prices:
+            holdings = (
+                Holding.query
+                .join(Account)
+                .join(Security)
+                .filter(
+                    Account.user_id == user.id,
+                    Security.is_public.is_(True),
+                    Security.auto_update_price.is_(True)
+                )
+                .all() 
+            )
+            
+            for holding in holdings:
+                symbol = holding.security.ticker
+                price = prices.get(symbol)
+                if price is not None:
+                    holding.price = float(price)
+                    holding.updated_at = datetime.utcnow()
+        
+            db.session.commit()
+        
+        # Refresh exchange rates
+        fetch_exchange_rate('USD', 'CAD')
+        fetch_exchange_rate('CAD', 'USD')
+
+    except Exception as e:
+        print(f"Warning: Could not refresh prices: {e}")
+
+    exchange_rates = get_exchange_rates(user)
+
+    # Clear old unexecuted transactions
+    RebalanceTransaction.query.filter_by(user_id=user.id, executed=False).delete()
+
+    # Calculate portfolio-level deltas
+    deltas, total_portfolio = calculate_asset_class_deltas(user, exchange_rates)
+
+    # Get balanced threshold
+    balanced_threshold = user.balanced_threshold or 0.5
+
+    # Filter out balanced asset classes
+    deltas = [d for d in deltas if abs(d['percentage_diff']) > balanced_threshold]
+
+    if not deltas:
+        db.session.commit()
+        return []
+
+    # Additional filter for trading costs if enabled
+    if user.trading_costs_enabled:
+        deltas = [d for d in deltas if abs(d['percentage_diff']) >= 0.1]
+
+    # Separate into overweight and underweight
+    overweight = {d['asset_class_id']: abs(d['dollar_diff']) for d in deltas if d['dollar_diff'] < 0}
+    underweight = {d['asset_class_id']: abs(d['dollar_diff']) for d in deltas if d['dollar_diff'] > 0}
+
+    transactions = []
+    execution_order = 1
+    
+    # Track what still needs to be sold/bought
+    remaining_to_sell = overweight.copy()
+    remaining_to_buy = underweight.copy()
+
+    # Process each underweight asset class (things we need to BUY)
+    for asset_class_id, buy_amount in underweight.items():
+        # Find the best account to buy this asset class
+        # Prioritize: accounts with existing holdings of this class > registered > largest accounts
+        
+        candidate_accounts = []
+        for account in user.accounts:
+            has_existing = any(
+                h.security and h.security.asset_class_id == asset_class_id 
+                for h in account.holdings
+            )
+            
+            # Check if we can sell overweight positions in this account to fund the buy
+            sellable_value = 0
+            for holding in account.holdings:
+                if holding.security and holding.security.asset_class_id in remaining_to_sell:
+                    sellable_value += holding.market_value
+            
+            account_value = sum(h.market_value for h in account.holdings)
+            
+            candidate_accounts.append({
+                'account': account,
+                'has_existing': has_existing,
+                'sellable_value': sellable_value,
+                'account_value': account_value,
+                'is_registered': account.is_registered
+            })
+        
+        # Sort: existing > sellable value > registered > largest
+        candidate_accounts.sort(key=lambda x: (
+            not x['has_existing'],
+            -x['sellable_value'],
+            not x['is_registered'],
+            -x['account_value']
+        ))
+        
+        if not candidate_accounts:
+            continue
+        
+        best_account = candidate_accounts[0]['account']
+        
+        # Generate SELL transactions in this account to fund the buy
+        cash_available = best_account.cash_balance
+        cash_needed = buy_amount
+        
+        for holding in best_account.holdings:
+            if cash_needed <= 0.01:
+                break
+            
+            if not holding.security or not holding.security.asset_class_id:
+                continue
+            
+            # Only sell if this asset class is overweight portfolio-wide
+            if holding.security.asset_class_id not in remaining_to_sell:
+                continue
+            
+            amount_to_sell = min(cash_needed, holding.market_value, remaining_to_sell[holding.security.asset_class_id])
+            
+            quantity_to_sell = int(amount_to_sell / holding.price)
+            actual_sell = quantity_to_sell * holding.price
+            
+            if quantity_to_sell < 1:
+                continue
+            
+            txn = RebalanceTransaction(
+                user_id=user.id,
+                account_id=best_account.id,
+                security_id=holding.security_id,
+                action='SELL',
+                quantity=quantity_to_sell,
+                price=holding.price,
+                amount=actual_sell,
+                currency=holding.security.currency,
+                execution_order=execution_order,
+                is_final_trade=False
+            )
+            db.session.add(txn)
+            transactions.append(txn)
+            execution_order += 1
+            
+            remaining_to_sell[holding.security.asset_class_id] -= actual_sell
+            cash_available += actual_sell
+            cash_needed -= actual_sell
+        
+        # Generate BUY transaction
+        amount_to_buy = min(buy_amount, cash_available)
+        
+        if amount_to_buy < 1:
+            continue
+        
+        # Find eligible securities for this asset class in this account
+        securities = Security.query.filter_by(asset_class_id=asset_class_id).all()
+        
+        eligible = []
+        for security in securities:
+            preference = SecurityPreference.query.filter_by(
+                user_id=user.id,
+                security_id=security.id
+            ).first()
+            
+            can_use = True
+            if preference:
+                if preference.restriction_type == 'restricted_to_accounts':
+                    if preference.account_config and preference.account_config.get('allowed'):
+                        can_use = best_account.id in preference.account_config['allowed']
+                elif preference.restriction_type == 'prioritized_accounts':
+                    if preference.account_config and preference.account_config.get('priority_1'):
+                        can_use = best_account.id in preference.account_config['priority_1']
+            
+            if can_use:
+                existing = any(h.security_id == security.id for h in best_account.holdings)
+                eligible.append({'security': security, 'existing': existing})
+        
+        if not eligible:
+            continue
+        
+        # Prefer existing holdings
+        eligible.sort(key=lambda x: (not x['existing'], x['security'].id))
+        
+        if len(eligible) > 1:
+            txn = RebalanceTransaction(
+                user_id=user.id,
+                account_id=best_account.id,
+                action='BUY',
+                quantity=0,
+                price=0,
+                amount=amount_to_buy,
+                currency=best_account.currency,
+                execution_order=execution_order,
+                requires_user_selection=True,
+                available_securities=[s['security'].id for s in eligible],
+                is_final_trade=False
+            )
+            db.session.add(txn)
+            transactions.append(txn)
+            execution_order += 1
+        else:
+            security = eligible[0]['security']
+            
+            # Get price
+            existing_holding = next((h for h in best_account.holdings if h.security_id == security.id), None)
+            if existing_holding:
+                price = existing_holding.price
+            else:
+                any_holding = Holding.query.filter_by(security_id=security.id).first()
+                price = any_holding.price if any_holding else None
+            
+            if not price or price <= 0:
+                continue
+            
+            quantity = int(amount_to_buy / price)
+            actual_buy = quantity * price
+            
+            if quantity < 1:
+                continue
+            
+            txn = RebalanceTransaction(
+                user_id=user.id,
+                account_id=best_account.id,
+                security_id=security.id,
+                action='BUY',
+                quantity=quantity,
+                price=price,
+                amount=actual_buy,
+                currency=security.currency,
+                execution_order=execution_order,
+                is_final_trade=False
+            )
+            db.session.add(txn)
+            transactions.append(txn)
+            execution_order += 1
+        
+        remaining_to_buy[asset_class_id] -= amount_to_buy
+
+    # Mark final BUY per account as fractional
+    account_last_buy = {}
+    for txn in transactions:
+        if txn.action == 'BUY':
+            account_last_buy[txn.account_id] = txn
+
+    for account_id, last_txn in account_last_buy.items():
+        last_txn.is_final_trade = True
+
+    db.session.commit()
+    return transactions
 
 
 # ============================================================================
@@ -192,6 +545,7 @@ def dashboard():
                          total_value=total_value,
                          allocation=allocation,
                          allocation_pct=allocation_pct,
+                         exchange_rates=exchange_rates,
                          base_currency=current_user.base_currency)
 
 
@@ -289,11 +643,8 @@ def add_holding():
     '''Add new holding to an account'''
     account_id = request.form.get('account_id')
     security_id = request.form.get('security_id')
-    ticker = request.form.get('ticker')
     quantity = request.form.get('quantity')
     price = request.form.get('price')
-    currency = request.form.get('currency', 'CAD')
-    asset_class_id = request.form.get('asset_class_id')
     
     account = Account.query.get_or_404(account_id)
     if account.user_id != current_user.id:
@@ -313,24 +664,9 @@ def add_holding():
         ticker=security.ticker,
         quantity=float(quantity),
         price=float(price) if price else 0,
-        currency=security.currency if hasattr(security, 'currency') else 'CAD',
+        currency=security.currency,
         asset_class_id=security.asset_class_id,
-        is_public=security.is_public,
-        auto_update_price=security.auto_update_price 
     )
-    
-    # If public and auto-update enabled, fetch price from yFinance
-    if holding.is_public and holding.auto_update and not price:
-        try:
-            ticker_data = yf.Ticker(security.ticker)
-            info = ticker_data.info
-            current_price = info.get('currentPrice') or info.get('regularMarketPrice')
-            if current_price:
-                holding.price = float(current_price)
-                holding.name = info.get('longName', '')
-                holding.last_price_update = datetime.utcnow()
-        except Exception as e:
-            print(f"Could not fetch price for {security.ticker}: {e}")
     
     db.session.add(holding)
     db.session.commit()
@@ -376,67 +712,50 @@ def delete_holding(holding_id):
         flash('Unauthorized access', 'error')
         return redirect(url_for('holdings'))
     
-    ticker = holding.ticker
+    ticker = holding.security.ticker
     db.session.delete(holding)
     db.session.commit()
     
     flash(f'Holding {ticker} deleted successfully', 'success')
     return redirect(url_for('holdings'))
 
-
-@app.route('/holdings/update-prices', methods=['POST'])
+@app.route('/update_prices', methods=['POST'])
 @login_required
 def update_prices():
-    '''Update all public holdings prices from yFinance'''
-    holdings = Holding.query.join(Account).filter(
-        Account.user_id == current_user.id,
-        Holding.is_public == True,
-        Holding.auto_update_price == True
-    ).all()
+    try:
+        prices = fetch_prices_from_user_sheet(current_user)
+        
+        if prices:
+            holdings = (
+                Holding.query
+                .join(Account)
+                .join(Security)
+                .filter(
+                    Account.user_id == current_user.id,
+                    Security.is_public == True,
+                    Security.auto_update_price == True
+                )
+                .all()
+            )
+            
+            updated_count = 0
+            for holding in holdings:
+                symbol = holding.security.ticker
+                price = prices.get(symbol)
+                if price is not None:
+                    holding.price = float(price)
+                    holding.updated_at = datetime.utcnow()
+                    updated_count += 1
+            
+            db.session.commit()
+            flash(f"Successfully updated {updated_count} security prices!", "success")
+        else:
+            flash("No prices fetched from Google Sheet.", "warning")
     
-    updated_count = update_prices_from_yfinance(holdings)
+    except Exception as e:
+        flash(f"Error updating prices: {str(e)}", "danger")
     
-    flash(f'Updated {updated_count} holdings from market data', 'success')
     return redirect(url_for('holdings'))
-
-@app.route('/asset-classes/manage', methods=['GET', 'POST'])
-@login_required
-def manage_asset_classes():
-    '''Manage asset classes - view, add, delete'''
-    if request.method == 'POST':
-        action = request.form.get('action')
-        
-        if action == 'add':
-            name = request.form.get('name')
-            if name:
-                # Check if already exists
-                existing = AssetClass.query.filter_by(name=name).first()
-                if existing:
-                    flash(f'Asset class "{name}" already exists', 'warning')
-                else:
-                    ac = AssetClass(name=name)
-                    db.session.add(ac)
-                    db.session.commit()
-                    flash(f'Asset class "{name}" added successfully', 'success')
-        
-        elif action == 'delete':
-            ac_id = request.form.get('asset_class_id')
-            if ac_id:
-                ac = AssetClass.query.get(ac_id)
-                if ac:
-                    # Check if it's used by any targets, holdings, or securities
-                    if ac.targets or ac.holdings or ac.securities:
-                        flash(f'Cannot delete "{ac.name}" - it is currently in use', 'error')
-                    else:
-                        db.session.delete(ac)
-                        db.session.commit()
-                        flash(f'Asset class "{ac.name}" deleted successfully', 'success')
-        
-        return redirect(url_for('manage_asset_classes'))
-    
-    # GET request - show all asset classes
-    asset_classes = AssetClass.query.order_by(AssetClass.name.asc()).all()
-    return render_template('manage_asset_classes.html', asset_classes=asset_classes)
 
 @app.route('/targets')
 @login_required
@@ -451,49 +770,59 @@ def targets():
 @app.route('/targets/update', methods=['POST'])
 @login_required
 def update_targets():
-    '''Update target allocations'''
-    # Delete existing targets
-    Target.query.filter_by(user_id=current_user.id).delete()
+    action = request.form.get('action')
     
-    target_count = 0
-    for key in request.form.keys():
-        if key.startswith('asset_class_id_'):
-            index = key.split('_')[-1]
-            asset_class_id = request.form.get(f'asset_class_id_{index}')
-            new_asset_class_name = request.form.get(f'new_asset_class_{index}')
-            percentage = request.form.get(f'percentage_{index}')
+    if action == 'add':
+        # Check if creating new asset class
+        asset_class_id = request.form.get('asset_class_id')
+        
+        if asset_class_id == 'new':
+            new_asset_class_name = request.form.get('new_asset_class_name', '').strip()
+            if not new_asset_class_name:
+                flash('Asset class name is required', 'danger')
+                return redirect(url_for('targets'))
             
-            # Handle new asset class creation
-            if asset_class_id == 'new' and new_asset_class_name:
-                # Check if asset class already exists
-                existing = AssetClass.query.filter_by(name=new_asset_class_name).first()
-                if existing:
-                    asset_class_id = existing.id
-                else:
-                    new_ac = AssetClass(name=new_asset_class_name)
-                    db.session.add(new_ac)
-                    db.session.flush()  # Get the ID
-                    asset_class_id = new_ac.id
-            
-            # Get restrictions
-            allowed_registered = request.form.get(f'allowed_registered_{index}') == 'on'
-            allowed_nonregistered = request.form.get(f'allowed_nonregistered_{index}') == 'on'
-            preferred_account = request.form.get(f'preferred_account_{index}')
-            
-            if asset_class_id and asset_class_id != 'new' and percentage:
-                target = Target(
-                    user_id=current_user.id,
-                    asset_class_id=int(asset_class_id),
-                    target_percentage=float(percentage),
-                    allowed_in_registered=allowed_registered,
-                    allowed_in_nonregistered=allowed_nonregistered,
-                    preferred_account_type=preferred_account if preferred_account else None
-                )
-                db.session.add(target)
-                target_count += 1
+            asset_class = AssetClass(name=new_asset_class_name)
+            db.session.add(asset_class)
+            db.session.flush()
+            asset_class_id = asset_class.id
+        
+        # Add new target (simplified - no account restrictions)
+        target = Target(
+            user_id=current_user.id,
+            asset_class_id=asset_class_id,
+            target_percentage=float(request.form.get('percentage'))
+        )
+        db.session.add(target)
+        db.session.commit()
+        flash('Target added successfully!', 'success')
+        
+    elif action == 'update':
+        target_id = request.form.get('target_id')
+        target = Target.query.get_or_404(target_id)
+        
+        if target.user_id != current_user.id:
+            flash('Unauthorized', 'danger')
+            return redirect(url_for('targets'))
+        
+        target.asset_class_id = request.form.get('asset_class_id')
+        target.target_percentage = float(request.form.get('percentage'))
+        
+        db.session.commit()
+        flash('Target updated successfully!', 'success')
+        
+    elif action == 'delete':
+        target_id = request.form.get('target_id')
+        target = Target.query.get_or_404(target_id)
+        
+        if target.user_id != current_user.id:
+            flash('Unauthorized', 'danger')
+            return redirect(url_for('targets'))
+        
+        db.session.delete(target)
+        db.session.commit()
+        flash('Target deleted successfully!', 'success')
     
-    db.session.commit()
-    flash(f'{target_count} target allocation(s) updated successfully', 'success')
     return redirect(url_for('targets'))
 
 @app.route("/securities")
@@ -562,7 +891,6 @@ def update_security_preference(security_id):
     security = Security.query.get_or_404(security_id)
     
     restriction_type = request.form.get('restriction_type')
-    account_id = request.form.get('account_id')
     notes = request.form.get('notes')
     
     if not restriction_type:
@@ -665,173 +993,242 @@ def delete_security(security_id):
     return redirect(url_for("securities"))
 
 
-@app.route('/save_preferences', methods=['POST'])
-@login_required
-def save_preferences():
-    """Persist security preference selections"""
-    for security in Security.query.all():
-        restriction = request.form.get(f'restriction_type_{security.id}')
-        account_id = request.form.get(f'account_id_{security.id}')
-
-        if restriction:
-            # find existing record
-            pref = (
-                SecurityPreference.query
-                .filter_by(security_id=security.id, account_id=account_id)
-                .join(Account)
-                .filter(Account.user_id == current_user.id)
-                .first()
-            )
-
-            if pref:
-                pref.restriction_type = restriction
-            else:
-                db.session.add(SecurityPreference(
-                    security_id=security.id,
-                    account_id=account_id or None,
-                    restriction_type=restriction
-                ))
-    db.session.commit()
-    flash('Preferences updated successfully.')
-    return redirect(url_for('preferences'))
-
 @app.route('/rebalance')
 @login_required
 def rebalance():
-    '''Calculate rebalance recommendations with account restrictions'''
-    accounts = Account.query.filter_by(user_id=current_user.id).all()
-    targets = Target.query.filter_by(user_id=current_user.id).all()
-    preferences = AssetClassPreference.query.filter_by(user_id=current_user.id).all()
+    '''View rebalance transactions'''
+    transactions = RebalanceTransaction.query.filter_by(
+        user_id=current_user.id,
+        executed=False
+    ).order_by(RebalanceTransaction.execution_order).all()
     
-    # Get exchange rates
     exchange_rates = get_exchange_rates(current_user)
     
-    # Calculate current allocation
-    allocation, allocation_pct, total_portfolio = calculate_portfolio_allocation(current_user, exchange_rates)
+    # Get all asset classes
+    asset_classes = AssetClass.query.all()
     
-    # Build preference map
-    preference_map = {p.asset_class: p for p in preferences}
+    # Calculate current allocation by asset class ID
+    allocation_by_id = {}
+    allocation_pct_by_id = {}
+    total_portfolio = 0
     
-    # Calculate differences and generate recommendations
-    rebalance_data = []
-    transactions = []
+    for account in current_user.accounts:
+        for holding in account.holdings:
+            if holding.security and holding.security.asset_class_id:
+                value_in_base = holding.market_value_in_base_currency(exchange_rates)
+                asset_class_id = holding.security.asset_class_id
+                allocation_by_id[asset_class_id] = allocation_by_id.get(asset_class_id, 0) + value_in_base
+                total_portfolio += value_in_base
+    
+    # Calculate percentages
+    if total_portfolio > 0:
+        for asset_class_id, value in allocation_by_id.items():
+            allocation_pct_by_id[asset_class_id] = (value / total_portfolio) * 100
+    
+    # Get targets
+    targets = Target.query.filter_by(user_id=current_user.id).all()
+    
+    # Build comparison data
+    comparison_data = []
     
     for target in targets:
-        current_value = allocation.get(target.asset_class_id, 0)
-        current_pct = allocation_pct.get(target.asset_class_id, 0)
-        target_value = total_portfolio * target.target_percentage / 100
-        difference = target_value - current_value
+        current_value = allocation_by_id.get(target.asset_class_id, 0)
+        current_pct = allocation_pct_by_id.get(target.asset_class_id, 0)
+        diff = current_pct - target.target_percentage
         
-        # Get preference for this asset class
-        preference = preference_map.get(target.asset_class_id)
-        
-        # Determine eligible accounts
-        eligible_accounts = []
-        for account in accounts:
-            # Check registration status restrictions
-            if not target.allowed_in_registered and account.is_registered:
-                continue
-            if not target.allowed_in_nonregistered and not account.is_registered:
-                continue
-            
-            # Check preferences
-            if preference:
-                if preference.only_in_registered and not account.is_registered:
-                    continue
-                if preference.only_in_nonregistered and account.is_registered:
-                    continue
-                if preference.avoid_account_types:
-                    avoid_list = [x.strip() for x in preference.avoid_account_types.split(',')]
-                    if account.account_type in avoid_list:
-                        continue
-            
-            eligible_accounts.append(account)
-        
-        # Determine action and preferred account
-        action = None
-        preferred_account = None
-        
-        if abs(difference) > 1:  # Threshold: $1
-            if difference > 0:
-                action = 'BUY'
-            else:
-                action = 'SELL'
-            
-            # Find preferred account
-            if preference and preference.preferred_account_id:
-                preferred_account = next((a for a in eligible_accounts if a.id == preference.preferred_account_id), None)
-            
-            if not preferred_account and target.preferred_account_type:
-                preferred_account = next((a for a in eligible_accounts if a.account_type == target.preferred_account_type), None)
-            
-            if not preferred_account and eligible_accounts:
-                # Use highest priority account
-                preferred_account = max(eligible_accounts, key=lambda a: a.priority)
-        
-        rebalance_data.append({
-            'asset_class': target.asset_class.name,
+        comparison_data.append({
+            'asset_class_name': target.asset_class.name,
             'current_value': current_value,
             'current_pct': current_pct,
             'target_pct': target.target_percentage,
-            'target_value': target_value,
-            'difference': difference,
-            'action': action,
-            'preferred_account': preferred_account,
-            'eligible_accounts': eligible_accounts,
-            'restrictions': {
-                'allowed_registered': target.allowed_in_registered,
-                'allowed_nonregistered': target.allowed_in_nonregistered
-            }
+            'difference': diff
         })
     
-    return render_template('rebalance.html', 
-                         rebalance_data=rebalance_data,
+    # Sort by current percentage descending
+    comparison_data.sort(key=lambda x: x['current_pct'], reverse=True)
+    
+    # Add securities for dropdown
+    securities = Security.query.all()
+    
+    return render_template('rebalance.html',
+                         transactions=transactions,
+                         securities=securities,
+                         comparison_data=comparison_data,
                          total_portfolio=total_portfolio,
                          base_currency=current_user.base_currency,
-                         accounts=accounts)
+                         accounts=current_user.accounts,
+                         balanced_threshold=current_user.balanced_threshold)
 
 
-@app.route('/rebalance/generate-transactions', methods=['POST'])
+@app.route('/rebalance/details/<int:asset_class_id>')
 @login_required
-def generate_rebalance_transactions():
-    '''Generate and save rebalance transaction recommendations'''
-    # Clear old transactions
-    RebalanceTransaction.query.filter_by(user_id=current_user.id, executed=False).delete()
-    
-    # Get rebalance data from request
-    targets = Target.query.filter_by(user_id=current_user.id).all()
+def rebalance_details(asset_class_id):
+    '''Show detailed security-level recommendations for an asset class'''
+    asset_class = AssetClass.query.get_or_404(asset_class_id)
     exchange_rates = get_exchange_rates(current_user)
-    allocation, allocation_pct, total_portfolio = calculate_portfolio_allocation(current_user, exchange_rates)
     
-    transaction_count = 0
+    # Get all securities in this asset class
+    securities = Security.query.filter_by(asset_class_id=asset_class_id).all()
     
-    for target in targets:
-        current_value = allocation.get(target.asset_class_id, 0)
-        target_value = total_portfolio * target.target_percentage / 100
-        difference = target_value - current_value
+    # Get user's preferences for these securities
+    prefs = {
+        pref.security_id: pref 
+        for pref in SecurityPreference.query.filter_by(user_id=current_user.id).all()
+    }
+    
+    # For each security, determine which accounts it can be held in
+    security_restrictions = []
+    for security in securities:
+        pref = prefs.get(security.id)
+        accounts = Account.query.filter_by(user_id=current_user.id).all()
         
-        if abs(difference) > 1:  # Only if difference > $1
-            action = 'BUY' if difference > 0 else 'SELL'
-            
-            # Find best account (simplified - you can add more logic)
-            accounts = Account.query.filter_by(user_id=current_user.id).all()
-            best_account = accounts[0] if accounts else None
-            
-            if best_account:
-                transaction = RebalanceTransaction(
-                    user_id=current_user.id,
-                    account_id=best_account.id,
-                    asset_class_id=target.asset_class_id,
-                    action=action,
-                    amount=abs(difference)
-                )
-                db.session.add(transaction)
-                transaction_count += 1
+        if not pref or pref.restriction_type == 'unrestricted':
+            # Can be in any account
+            allowed_accounts = accounts
+            priority_accounts = []
+        
+        elif pref.restriction_type == 'restricted_to_accounts':
+            # Only specific accounts allowed
+            allowed_ids = pref.account_config.get('allowed', [])
+            allowed_accounts = [a for a in accounts if a.id in allowed_ids]
+            priority_accounts = []
+        
+        elif pref.restriction_type == 'prioritized_accounts':
+            # All accounts allowed, but prioritized
+            allowed_accounts = accounts
+            priority_config = pref.account_config or {}
+            priority_accounts = [
+                {
+                    'level': 1,
+                    'accounts': [a for a in accounts if a.id in priority_config.get('priority_1', [])]
+                },
+                {
+                    'level': 2,
+                    'accounts': [a for a in accounts if a.id in priority_config.get('priority_2', [])]
+                },
+                {
+                    'level': 3,
+                    'accounts': [a for a in accounts if a.id in priority_config.get('priority_3', [])]
+                }
+            ]
+        else:
+            allowed_accounts = accounts
+            priority_accounts = []
+        
+        security_restrictions.append({
+            'security': security,
+            'restriction_type': pref.restriction_type if pref else 'unrestricted',
+            'allowed_accounts': allowed_accounts,
+            'priority_accounts': priority_accounts,
+            'notes': pref.notes if pref else None
+        })
     
-    db.session.commit()
+    return render_template('rebalance_details.html',
+                         asset_class=asset_class,
+                         security_restrictions=security_restrictions,
+                         base_currency=current_user.base_currency)
+
+
+@app.route('/rebalance/generate', methods=['POST'])
+@login_required
+def generate_rebalance():
+    '''Generate fresh rebalance transactions'''
+    try:
+        transactions = generate_rebalance_transactions(current_user)
+        flash(f'Generated {len(transactions)} rebalance transactions', 'success')
+    except Exception as e:
+        flash(f'Error generating rebalance plan: {e}', 'error')
     
-    flash(f'Generated {transaction_count} rebalancing transactions', 'success')
     return redirect(url_for('rebalance'))
+
+
+@app.route('/rebalance/execute/<int:transaction_id>', methods=['POST'])
+@login_required
+def execute_rebalance_transaction(transaction_id):
+    '''Execute a single rebalance transaction and refresh the plan'''
+    txn = RebalanceTransaction.query.get_or_404(transaction_id)
+    
+    if txn.user_id != current_user.id:
+        flash('Unauthorized', 'error')
+        return redirect(url_for('rebalance'))
+    
+    if txn.requires_user_selection:
+        # User needs to select security first
+        security_id = request.form.get('security_id')
+        if not security_id:
+            flash('Please select a security', 'error')
+            return redirect(url_for('rebalance'))
+        
+        txn.security_id = int(security_id)
+        security = Security.query.get(security_id)
+        # Update price and quantity based on selection
+        # (you'd need current price here)
+    
+    try:
+        # Update holdings
+        holding = Holding.query.filter_by(
+            account_id=txn.account_id,
+            security_id=txn.security_id
+        ).first()
+        
+        if txn.action == 'SELL':
+            if holding:
+                holding.quantity -= txn.quantity
+                if holding.quantity <= 0:
+                    db.session.delete(holding)
+        else:  # BUY
+            if holding:
+                holding.quantity += txn.quantity
+            else:
+                holding = Holding(
+                    account_id=txn.account_id,
+                    security_id=txn.security_id,
+                    quantity=txn.quantity,
+                    price=txn.price
+                )
+                db.session.add(holding)
+        
+        # Update cash balance
+        account = Account.query.get(txn.account_id)
+        if txn.action == 'SELL':
+            account.cash_balance += txn.amount
+        else:  # BUY
+            account.cash_balance -= txn.amount
+        
+        # Mark as executed
+        txn.executed = True
+        txn.executed_at = datetime.utcnow()
+        db.session.commit()
+        
+        # Regenerate plan
+        generate_rebalance_transactions(current_user)
+        
+        flash(f'Executed: {txn.action} {txn.quantity:.2f} of {txn.security.ticker}', 'success')
+        
+    except Exception as e:
+        db.session.rollback()
+        flash(f'Error executing transaction: {e}', 'error')
+    
+    return redirect(url_for('rebalance'))
+
+
+@app.route('/account/<int:account_id>/cash', methods=['POST'])
+@login_required
+def update_cash_balance(account_id):
+    '''Update cash balance for an account'''
+    account = Account.query.get_or_404(account_id)
+    
+    if account.user_id != current_user.id:
+        flash('Unauthorized', 'error')
+        return redirect(url_for('holdings'))
+    
+    cash_balance = request.form.get('cash_balance')
+    if cash_balance:
+        account.cash_balance = float(cash_balance)
+        db.session.commit()
+        flash(f'Updated cash balance for {account.name}', 'success')
+    
+    return redirect(url_for('holdings'))
 
 
 @app.route('/settings')
@@ -846,14 +1243,23 @@ def settings():
 def update_settings():
     '''Update user settings'''
     base_currency = request.form.get('base_currency')
+    price_sheet_id = request.form.get('price_sheet_id')
+    trading_costs_enabled = request.form.get('trading_costs_enabled') == 'on'
     
     if base_currency in ['CAD', 'USD']:
         current_user.base_currency = base_currency
-        db.session.commit()
-        flash('Settings updated successfully', 'success')
     else:
         flash('Invalid currency selection', 'error')
+        return redirect(url_for('settings'))
     
+    if price_sheet_id:
+        current_user.price_sheet_id = price_sheet_id.strip()
+    
+    current_user.trading_costs_enabled = trading_costs_enabled
+    current_user.balanced_threshold = float(request.form.get('balanced_threshold', 0.5))
+    
+    db.session.commit()
+    flash('Settings updated successfully', 'success')
     return redirect(url_for('settings'))
 
 
@@ -926,7 +1332,7 @@ def api_get_holdings():
             data.append({
                 'account': account.name,
                 'account_type': account.account_type,
-                'ticker': holding.ticker,
+                'ticker': holding.security.ticker,
                 'name': holding.name,
                 'quantity': holding.quantity,
                 'price': holding.price,
@@ -954,26 +1360,6 @@ def api_portfolio_summary():
         'asset_allocation': dict(allocation),
         'asset_allocation_pct': dict(allocation_pct)
     })
-
-
-@app.route('/api/ticker/<ticker>/info', methods=['GET'])
-@login_required
-def api_ticker_info(ticker):
-    '''Get ticker information from yFinance'''
-    try:
-        ticker_obj = yf.Ticker(ticker)
-        info = ticker_obj.info
-        
-        return jsonify({
-            'ticker': ticker,
-            'name': info.get('longName', ''),
-            'price': info.get('currentPrice') or info.get('regularMarketPrice'),
-            'currency': info.get('currency', 'USD'),
-            'sector': info.get('sector', ''),
-            'industry': info.get('industry', '')
-        })
-    except Exception as e:
-        return jsonify({'error': str(e)}), 400
 
 
 # ============================================================================
@@ -1012,5 +1398,4 @@ except Exception as e:
 
 
 if __name__ == '__main__':
-#    app.run(host='0.0.0.0', port=5000, debug=os.getenv('FLASK_ENV') != 'production')
     app.run(debug=True, host='0.0.0.0', port=5000) 

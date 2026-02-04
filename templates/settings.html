@@ -14,6 +14,42 @@
                 <option value="USD" {% if user.base_currency == 'USD' %}selected{% endif %}>USD</option>
             </select>
         </div>
+        <div class="form-group">
+            <label for="trading_costs_enabled">
+                <input type="checkbox" 
+                       id="trading_costs_enabled" 
+                       name="trading_costs_enabled" 
+                       {% if user.trading_costs_enabled %}checked{% endif %}>
+                Enable trading cost filtering
+            </label>
+            <p style="font-size: 0.85rem; color: #7f8c8d; margin-top: 0.5rem;">
+                When enabled, rebalancing will ignore deltas smaller than 0.1% to minimize trading costs.
+            </p>
+        </div>
+        <div class="form-group">
+            <label for="balanced_threshold">Balanced Allocation Threshold (%)</label>
+            <input type="number" 
+                   step="0.1" 
+                   id="balanced_threshold" 
+                   name="balanced_threshold" 
+                   value="{{ current_user.balanced_threshold or 0.5 }}"
+                   required>
+            <small style="color: #7f8c8d;">Asset classes within this % of target are considered "balanced" (default: 0.5%)</small>
+        </div>
+        <div class="form-group">
+            <label for="price_sheet_id">Price Lookup Sheet ID</label>
+            <input type="text" 
+                   id="price_sheet_id" 
+                   name="price_sheet_id" 
+                   value="{{ user.price_sheet_id or '' }}" 
+                   placeholder="e.g., 1aBcDeFgHiJkLmNoPqRsTuVwXyZ123456789">
+            <small style="display: block; margin-top: 0.5rem; color: #7f8c8d;">
+                Create a Google Sheet with tickers in column A (e.g., XEC.TO) and 
+                <code>=GOOGLEFINANCE(A2,"price")</code> formulas in column B. 
+                Then paste the Sheet ID from the URL here: 
+                <code>docs.google.com/spreadsheets/d/<strong>YOUR_SHEET_ID</strong>/edit</code>
+            </small>
+        </div>
         <button type="submit" class="btn btn-success">Save Settings</button>
     </form>
 </div>

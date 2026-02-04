@@ -25,3 +25,8 @@ yfinance==0.2.33
 # Forex rates (optional alternative)
 forex-python==1.8
 
+google-api-python-client
+google-auth
+google-auth-oauthlib
+google-auth-httplib2
+

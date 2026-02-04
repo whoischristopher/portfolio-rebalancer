@@ -1,4 +1,5 @@
 import os
+import json
 from flask import Blueprint, redirect, url_for, session, flash, request
 from flask_login import login_user, logout_user, current_user
 from authlib.integrations.flask_client import OAuth
@@ -17,7 +18,11 @@ def init_oauth(app):
         client_secret=os.getenv('GOOGLE_CLIENT_SECRET'),
         server_metadata_url='https://accounts.google.com/.well-known/openid-configuration',
         client_kwargs={
-            'scope': 'openid email profile'
+            'scope': 'openid email profile https://www.googleapis.com/auth/spreadsheets.readonly'
+        },
+        authorize_params={
+            'access_type': 'offline',
+            'prompt': 'consent'
         }
     )
 
@@ -26,10 +31,10 @@ def login():
     '''Redirect to Google OAuth login page'''
     if current_user.is_authenticated:
         return redirect(url_for('dashboard'))
-    
-    # Generate redirect URI with HTTPS
-    redirect_uri = url_for('auth.callback', _external=True, _scheme='https')
-    return oauth.google.authorize_redirect(redirect_uri)
+
+    # Generate redirect URI (HTTPS in production, HTTP in dev)
+    scheme = 'https' if os.getenv('FLASK_ENV') == 'production' else None
+    redirect_uri = url_for('auth.callback', _external=True, _scheme=scheme)
 
 @auth_bp.route('/callback')
 def callback():
@@ -56,6 +61,7 @@ def callback():
                 email=email,
                 name=user_info.get('name', ''),
                 picture=user_info.get('picture', ''),
+                google_token=json.dumps(token),
                 created_at=datetime.utcnow(),
                 last_login=datetime.utcnow()
             )
@@ -65,6 +71,7 @@ def callback():
         else:
             # Update last login
             user.last_login = datetime.utcnow()
+            user.google_token = json.dumps(token)
             db.session.commit()
             flash(f'Welcome back, {user.name}!', 'success')
         
@@ -72,14 +79,12 @@ def callback():
         login_user(user, remember=True)
         
         # Redirect to next page or dashboard
-        next_page = request.args.get('next')
-        return redirect(next_page) if next_page else redirect(url_for('dashboard'))
+        return redirect(request.args.get('next') or url_for('dashboard'))
         
     except Exception as e:
         print(f"Authentication error: {e}")
         flash('Authentication failed. Please try again.', 'error')
         return redirect(url_for('index'))
-
 
 @auth_bp.route('/logout')
 def logout():

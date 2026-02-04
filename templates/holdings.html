@@ -57,6 +57,22 @@
     </span>
   </h2>
 
+  <!-- CASH SECTION -->
+  <div style="background: #f8f9fa; padding: 1rem; border-radius: 4px; margin-bottom: 1rem;">
+    <form method="POST" action="{{ url_for('update_cash_balance', account_id=account.id) }}" style="display: flex; align-items: center; gap: 1rem;">
+      <label style="margin: 0; font-weight: bold; color: #2c3e50;">Cash Balance:</label>
+      <input type="number" 
+             name="cash_balance" 
+             step="0.01" 
+             value="{{ account.cash_balance }}" 
+             placeholder="0.00"
+             style="width: 150px; padding: 0.5rem;">
+      <span>{{ account.currency }}</span>
+      <button type="submit" class="btn btn-sm btn-primary">Update Cash</button>
+    </form>
+  </div>
+  <!-- END CASH SECTION -->
+
   {% if account.holdings %}
   <table>
     <thead>
@@ -84,7 +100,7 @@
         <td>{{ holding.security.asset_class.name if holding.security and holding.security.asset_class else holding.asset_class or '-' }}</td>
 
         <td>
-          {% if holding.is_public %}
+          {% if holding.security and holding.security.is_public %}
             <span style="color: #3498db;">Public</span>
           {% else %}
             <span style="color: #e67e22;">Private</span>
@@ -92,14 +108,10 @@
         </td>
 
         <td class="text-right">{{ "%.3f"|format(holding.quantity) }}</td>
-        <td class="text-right">{{ holding.currency }} ${{ "%.2f"|format(holding.price) }}</td>
-        <td class="text-right"><strong>{{ holding.currency }} ${{ "%.2f"|format(holding.market_value) }}</strong></td>
+        <td class="text-right">{{ holding.currency }} ${{ "{:,.2f}".format(holding.price) }}</td>
+        <td class="text-right"><strong>{{ holding.currency }} ${{ "{:,.2f}".format(holding.market_value) }}</strong></td>
         <td class="text-right">
-          {% if holding.currency != base_currency %}
-            {{ base_currency }} ${{ "%.2f"|format(holding.market_value_in_base_currency(exchange_rates)) }}
-          {% else %}
-            -
-          {% endif %}
+          {{ base_currency }} ${{ "{:,.2f}".format(holding.market_value_in_base_currency(exchange_rates)) }}
         </td>
 
         <td>
@@ -111,8 +123,8 @@
         </td>
 
         <td style="font-size: 0.85rem; color: #7f8c8d;">
-          {% if holding.last_price_update %}
-            {{ holding.last_price_update.strftime('%Y-%m-%d') }}
+          {% if holding.updated_at %}
+            {{ holding.updated_at.strftime('%Y-%m-%d') }}
           {% else %}
             Never
           {% endif %}
@@ -135,8 +147,10 @@
       {% endfor %}
 
       <tr style="background: #f8f9fa; font-weight: bold;">
-        <td colspan="7" class="text-right">Account Total:</td>
-        <td class="text-right">{{ account.currency }} ${{ "%.2f"|format(account.holdings|sum(attribute='market_value')) }}</td>
+        <td colspan="7" class="text-right"><strong>Account Total:</strong></td>
+        <td class="text-right">
+          <strong>{{ base_currency }} ${{ "{:,.2f}".format(account.total_value_in_base_currency(exchange_rates)) }}</strong>
+        </td>
         <td colspan="4"></td>
       </tr>
     </tbody>

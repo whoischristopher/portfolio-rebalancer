@@ -6,225 +6,197 @@
 <h1 style="margin-bottom: 2rem;">Target Allocation</h1>
 
 <div class="card">
-    <h2>Set Your Target Asset Allocation</h2>
-    <p style="color: #7f8c8d; margin-bottom: 1.5rem;">Define the percentage allocation for each asset class with account restrictions. Total should equal 100%.</p>
-
-    <div style="margin-bottom: 1rem;">
-        <a href="{{ url_for('manage_asset_classes') }}" class="btn btn-secondary">Manage Asset Classes</a>
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem;">
+        <div>
+            <h2 style="margin: 0;">Target Asset Allocation</h2>
+            <p style="color: #7f8c8d; margin: 0.5rem 0 0 0;">Define the percentage allocation for each asset class. Total should equal 100%.</p>
+            <p style="color: #7f8c8d; font-size: 0.9rem; margin: 0.3rem 0 0 0;"><em>Note: Account restrictions are set per-security on the Securities page.</em></p>
+        </div>
     </div>
-    
-    <form method="POST" action="{{ url_for('update_targets') }}">
-        <div id="targets-container">
-            {% if targets %}
-                {% for target in targets %}
-                <div class="target-row" style="border: 1px solid #ddd; padding: 1rem; margin-bottom: 1rem; border-radius: 4px;">
-                    <div style="display: grid; grid-template-columns: 2fr 1fr 1fr; gap: 1rem; margin-bottom: 0.5rem;">
-                        <div class="form-group" style="margin-bottom: 0;">
-                            <label>Asset Class</label>
-                            <div style="display: flex; gap: 0.5rem; align-items: center;">
-                                <select name="asset_class_id_{{ loop.index }}" id="asset_class_select_{{ loop.index }}" required style="flex: 1;">
-                                    {% for ac in asset_classes %}
-                                        <option value="{{ ac.id }}" {% if target.asset_class_id == ac.id %}selected{% endif %}>{{ ac.name }}</option>
-                                    {% endfor %}
-                                    <option value="new">+ Add New Asset Class</option>
-                                </select>
-                                <input type="text" name="new_asset_class_{{ loop.index }}" id="new_asset_class_{{ loop.index }}" placeholder="New asset class name" style="display: none; flex: 1;">
-                            </div>
 
-                        </div>
-                        <div class="form-group" style="margin-bottom: 0;">
-                            <label>Target %</label>
-                            <input type="number" step="0.1" name="percentage_{{ loop.index }}" value="{{ target.target_percentage }}" required placeholder="25.0">
-                        </div>
-                        <div class="form-group" style="margin-bottom: 0;">
-                            <label>Preferred Account Type</label>
-                            <select name="preferred_account_{{ loop.index }}">
-                                <option value="">None</option>
-                                <option value="RRSP" {% if target.preferred_account_type == 'RRSP' %}selected{% endif %}>RRSP</option>
-                                <option value="TFSA" {% if target.preferred_account_type == 'TFSA' %}selected{% endif %}>TFSA</option>
-                                <option value="Non-Registered" {% if target.preferred_account_type == 'Non-Registered' %}selected{% endif %}>Non-Registered</option>
-                            </select>
-                        </div>
-                    </div>
-                    <div style="display: flex; gap: 1rem; align-items: center;">
-                        <label>
-                            <input type="checkbox" name="allowed_registered_{{ loop.index }}" {% if target.allowed_in_registered %}checked{% endif %}>
-                            Allow in Registered Accounts
-                        </label>
-                        <label>
-                            <input type="checkbox" name="allowed_nonregistered_{{ loop.index }}" {% if target.allowed_in_nonregistered %}checked{% endif %}>
-                            Allow in Non-Registered Accounts
-                        </label>
-                        <button type="button" class="btn btn-danger" onclick="this.parentElement.parentElement.remove()">Remove</button>
-                    </div>
-                </div>
-                {% endfor %}
-            {% else %}
-                <div class="target-row" style="border: 1px solid #ddd; padding: 1rem; margin-bottom: 1rem; border-radius: 4px;">
-                    <div style="display: grid; grid-template-columns: 2fr 1fr 1fr; gap: 1rem; margin-bottom: 0.5rem;">
-                        <div class="form-group" style="margin-bottom: 0;">
-                            <label>Asset Class</label>
-                             <div style="display: flex; gap: 0.5rem; align-items: center;">
-                                 <select name="asset_class_id_1" id="asset_class_select_1" required style="flex: 1;">
-                                     <option value="">Select Asset Class</option>
-                                     {% for ac in asset_classes %}
-                                         <option value="{{ ac.id }}">{{ ac.name }}</option>
-                                     {% endfor %}
-                                     <option value="new">+ Add New Asset Class</option>
-                                 </select>
-                                 <input type="text" name="new_asset_class_1" id="new_asset_class_1" placeholder="New asset class name" style="display: none; flex: 1;">
-                             </div>
-                        </div>
-                        <div class="form-group" style="margin-bottom: 0;">
-                            <label>Target %</label>
-                            <input type="number" step="0.1" name="percentage_1" required placeholder="25.0">
-                        </div>
-                        <div class="form-group" style="margin-bottom: 0;">
-                            <label>Preferred Account Type</label>
-                            <select name="preferred_account_1">
-                                <option value="">None</option>
-                                <option value="RRSP">RRSP</option>
-                                <option value="TFSA">TFSA</option>
-                                <option value="Non-Registered">Non-Registered</option>
-                            </select>
-                        </div>
-                    </div>
-                    <div style="display: flex; gap: 1rem; align-items: center;">
-                        <label>
-                            <input type="checkbox" name="allowed_registered_1" checked>
-                            Allow in Registered Accounts
-                        </label>
-                        <label>
-                            <input type="checkbox" name="allowed_nonregistered_1" checked>
-                            Allow in Non-Registered Accounts
-                        </label>
-                        <button type="button" class="btn btn-danger" onclick="this.parentElement.parentElement.remove()">Remove</button>
-                    </div>
-                </div>
-            {% endif %}
-        </div>
-        
-        <div style="margin-top: 1rem; display: flex; gap: 1rem;">
-            <button type="button" class="btn btn-primary" onclick="addTargetRow()">Add Asset Class</button>
-            <button type="submit" class="btn btn-success">Save Targets</button>
-        </div>
-    </form>
-</div>
-
-{% if targets %}
-<div class="card">
-    <h2>Current Target Allocation</h2>
+    {% if targets %}
     <table>
         <thead>
             <tr>
                 <th>Asset Class</th>
                 <th class="text-right">Target %</th>
-                <th>Preferred Account</th>
-                <th>Restrictions</th>
+                <th style="width: 120px;">Actions</th>
             </tr>
         </thead>
-        <tbody>
+        <tbody id="targets-table-body">
             {% for target in targets %}
-            <tr>
-                <td><strong>{{ target.asset_class.name }}</strong></td>
-                <td class="text-right">{{ "%.1f"|format(target.target_percentage) }}%</td>
-                <td>{{ target.preferred_account_type or '-' }}</td>
-                <td style="font-size: 0.85rem;">
-                    {% if target.allowed_in_registered and target.allowed_in_nonregistered %}
-                    Any account
-                    {% elif target.allowed_in_registered %}
-                    Registered only
-                    {% elif target.allowed_in_nonregistered %}
-                    Non-registered only
-                    {% else %}
-                    <span style="color: #e74c3c;">No accounts allowed!</span>
-                    {% endif %}
+            <tr id="row-{{ target.id }}" data-target-id="{{ target.id }}">
+                <!-- Display Mode -->
+                <td class="display-mode">
+                    <strong>{{ target.asset_class.name }}</strong>
+                </td>
+                <td class="display-mode text-right">
+                    {{ "%.1f"|format(target.target_percentage) }}%
+                </td>
+                
+                <!-- Edit Mode (hidden by default) -->
+                <td class="edit-mode" style="display: none;">
+                    <select class="edit-asset-class" style="width: 100%;">
+                        {% for ac in asset_classes %}
+                            <option value="{{ ac.id }}" {% if target.asset_class_id == ac.id %}selected{% endif %}>{{ ac.name }}</option>
+                        {% endfor %}
+                    </select>
+                </td>
+                <td class="edit-mode text-right" style="display: none;">
+                    <input type="number" step="0.1" class="edit-percentage" value="{{ target.target_percentage }}" style="width: 80px; text-align: right;">%
+                </td>
+                
+                <td>
+                    <div class="display-mode">
+                        <button class="btn btn-sm btn-warning" onclick="editRow({{ target.id }})">Edit</button>
+                        <button class="btn btn-sm btn-danger" onclick="deleteTarget({{ target.id }})">Delete</button>
+                    </div>
+                    <div class="edit-mode" style="display: none;">
+                        <button class="btn btn-sm btn-success" onclick="saveRow({{ target.id }})">Save</button>
+                        <button class="btn btn-sm btn-secondary" onclick="cancelEdit({{ target.id }})">Cancel</button>
+                    </div>
                 </td>
             </tr>
             {% endfor %}
+            
             <tr style="background: #f8f9fa; font-weight: bold;">
                 <td>Total:</td>
-                <td class="text-right">{{ "%.1f"|format(targets|sum(attribute='target_percentage')) }}%</td>
-                <td colspan="2"></td>
+                <td class="text-right" id="total-percentage">{{ "%.1f"|format(targets|sum(attribute='target_percentage')) }}%</td>
+                <td></td>
             </tr>
         </tbody>
     </table>
+    
+    {% else %}
+    <p style="color: #7f8c8d; text-align: center; padding: 2rem;">No targets defined yet. Click "Add New Target" below to get started.</p>
+    {% endif %}
+    
+    <div style="margin-top: 1.5rem;">
+        <button class="btn btn-primary" onclick="showAddForm()">+ Add New Target</button>
+    </div>
 </div>
-{% endif %}
 
-<script>
-let targetCounter = {{ targets|length if targets else 1 }};
-
-function addTargetRow() {
-    targetCounter++;
-    const container = document.getElementById('targets-container');
-    const row = document.createElement('div');
-    row.className = 'target-row';
-    row.style.cssText = 'border: 1px solid #ddd; padding: 1rem; margin-bottom: 1rem; border-radius: 4px;';
-    row.innerHTML = `
-        <div style="display: grid; grid-template-columns: 2fr 1fr 1fr; gap: 1rem; margin-bottom: 0.5rem;">
-            <div class="form-group" style="margin-bottom: 0;">
+<!-- Add New Target Modal -->
+<div id="addModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 1000;">
+    <div style="background: white; max-width: 500px; margin: 100px auto; padding: 2rem; border-radius: 8px;">
+        <h2>Add New Target</h2>
+        <form id="addTargetForm" method="POST" action="{{ url_for('update_targets') }}">
+            <input type="hidden" name="action" value="add">
+            
+            <div class="form-group">
                 <label>Asset Class</label>
-                <div style="display: flex; gap: 0.5rem; align-items: center;">
-                    <select name="asset_class_id_${targetCounter}" id="asset_class_select_${targetCounter}" required style="flex: 1;">
-                        <option value="">Select Asset Class</option>
-                        {% for ac in asset_classes %}
-                            <option value="{{ ac.id }}">{{ ac.name }}</option>
-                        {% endfor %}
-                        <option value="new">+ Add New Asset Class</option>
-                    </select>
-                    <input type="text" name="new_asset_class_${targetCounter}" id="new_asset_class_${targetCounter}" placeholder="New asset class name" style="display: none; flex: 1;">
-                </div>
-            </div>
-            <div class="form-group" style="margin-bottom: 0;">
-                <label>Target %</label>
-                <input type="number" step="0.1" name="percentage_${targetCounter}" required placeholder="10.0">
-            </div>
-            <div class="form-group" style="margin-bottom: 0;">
-                <label>Preferred Account Type</label>
-                <select name="preferred_account_${targetCounter}">
-                    <option value="">None</option>
-                    <option value="RRSP">RRSP</option>
-                    <option value="TFSA">TFSA</option>
-                    <option value="Non-Registered">Non-Registered</option>
+                <select id="asset_class_select" name="asset_class_id" onchange="toggleNewAssetClass()" required style="width: 100%;">
+                    <option value="">Select Asset Class</option>
+                    {% for ac in asset_classes %}
+                        <option value="{{ ac.id }}">{{ ac.name }}</option>
+                    {% endfor %}
+                    <option value="new">+ Create New Asset Class</option>
                 </select>
             </div>
-        </div>
-        <div style="display: flex; gap: 1rem; align-items: center;">
-            <label>
-                <input type="checkbox" name="allowed_registered_${targetCounter}" checked>
-                Allow in Registered Accounts
-            </label>
-            <label>
-                <input type="checkbox" name="allowed_nonregistered_${targetCounter}" checked>
-                Allow in Non-Registered Accounts
-            </label>
-            <button type="button" class="btn btn-danger" onclick="this.parentElement.parentElement.remove()">Remove</button>
-        </div>
-    `;
-    container.appendChild(row);
+            
+            <div id="new_asset_class_container" class="form-group" style="display: none;">
+                <label>New Asset Class Name</label>
+                <input type="text" id="new_asset_class_name" name="new_asset_class_name" placeholder="e.g., Real Estate" style="width: 100%;">
+            </div>
+            
+            <div class="form-group">
+                <label>Target Percentage</label>
+                <input type="number" step="0.1" name="percentage" required placeholder="10.0" style="width: 100%;">
+            </div>
+            
+            <div style="padding: 0.75rem; background: #f8f9fa; border-radius: 4px; margin-bottom: 1rem; font-size: 0.9rem;">
+                <strong>💡 Tip:</strong> Set account restrictions per security on the <a href="{{ url_for('securities') }}">Securities page</a>.
+            </div>
+            
+            <div style="display: flex; gap: 1rem; margin-top: 1.5rem;">
+                <button type="submit" class="btn btn-success">Add Target</button>
+                <button type="button" class="btn btn-secondary" onclick="closeAddForm()">Cancel</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<style>
+.btn-sm {
+    padding: 0.4rem 0.6rem;
+    font-size: 0.85rem;
+}
+</style>
+
+<script>
+function toggleNewAssetClass() {
+    const select = document.getElementById('asset_class_select');
+    const container = document.getElementById('new_asset_class_container');
+    const input = document.getElementById('new_asset_class_name');
+    
+    if (select.value === 'new') {
+        container.style.display = 'block';
+        input.required = true;
+        select.required = false;
+    } else {
+        container.style.display = 'none';
+        input.required = false;
+        select.required = true;
+    }
 }
 
-// Handle "Add New" asset class selection
-document.addEventListener('change', function(e) {
-    if (e.target.name && e.target.name.startsWith('asset_class_id_')) {
-        const index = e.target.name.split('_').pop();
-        const selectElem = document.getElementById('asset_class_select_' + index);
-        const inputElem = document.getElementById('new_asset_class_' + index);
-        
-        if (selectElem && inputElem) {
-            if (selectElem.value === 'new') {
-                inputElem.style.display = 'block';
-                inputElem.required = true;
-                selectElem.required = false;
-            } else {
-                inputElem.style.display = 'none';
-                inputElem.required = false;
-                selectElem.required = true;
-            }
-        }
+function editRow(targetId) {
+    const row = document.getElementById('row-' + targetId);
+    row.querySelectorAll('.display-mode').forEach(el => el.style.display = 'none');
+    row.querySelectorAll('.edit-mode').forEach(el => el.style.display = '');
+}
+
+function cancelEdit(targetId) {
+    location.reload();
+}
+
+function saveRow(targetId) {
+    const row = document.getElementById('row-' + targetId);
+    const assetClassId = row.querySelector('.edit-asset-class').value;
+    const percentage = row.querySelector('.edit-percentage').value;
+    
+    const form = document.createElement('form');
+    form.method = 'POST';
+    form.action = '{{ url_for("update_targets") }}';
+    
+    form.innerHTML = `
+        <input type="hidden" name="action" value="update">
+        <input type="hidden" name="target_id" value="${targetId}">
+        <input type="hidden" name="asset_class_id" value="${assetClassId}">
+        <input type="hidden" name="percentage" value="${percentage}">
+    `;
+    
+    document.body.appendChild(form);
+    form.submit();
+}
+
+function deleteTarget(targetId) {
+    if (!confirm('Are you sure you want to delete this target?')) {
+        return;
     }
-});
+    
+    const form = document.createElement('form');
+    form.method = 'POST';
+    form.action = '{{ url_for("update_targets") }}';
+    
+    form.innerHTML = `
+        <input type="hidden" name="action" value="delete">
+        <input type="hidden" name="target_id" value="${targetId}">
+    `;
+    
+    document.body.appendChild(form);
+    form.submit();
+}
+
+function showAddForm() {
+    document.getElementById('addModal').style.display = 'block';
+}
+
+function closeAddForm() {
+    document.getElementById('addModal').style.display = 'none';
+    document.getElementById('addTargetForm').reset();
+    document.getElementById('new_asset_class_container').style.display = 'none';
+}
 </script>
 {% endblock %}
 

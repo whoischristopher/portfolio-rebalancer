@@ -41,7 +41,7 @@
     <label for="asset_class">Asset Class</label>
       <select id="asset_class_id" name="asset_class_id" class="form-control">
         {% for ac in asset_classes %}
-          <option value="{{ ac.id }}" {% if security.asset_class_id == ac.id %}selected{% endif %}>
+          <option value="{{ ac.id }}" {% if holding.asset_class_id == ac.id %}selected{% endif %}>
             {{ ac.name }}
           </option>
         {% endfor %}
