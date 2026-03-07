@@ -37,6 +37,17 @@
             <small style="color: #7f8c8d;">Asset classes within this % of target are considered "balanced" (default: 0.5%)</small>
         </div>
         <div class="form-group">
+            <label>
+                <input type="checkbox" name="precision_rebalancing" 
+                       {% if current_user.precision_rebalancing %}checked{% endif %}>
+                Fine-tune balanced positions with idle cash
+            </label>
+            <small class="form-text text-muted">
+                After closing major deltas, deploy remaining idle cash to fine-tune 
+                positions that are within the balanced threshold.
+            </small>
+        </div>
+        <div class="form-group">
             <label for="price_sheet_id">Price Lookup Sheet ID</label>
             <input type="text" 
                    id="price_sheet_id" 

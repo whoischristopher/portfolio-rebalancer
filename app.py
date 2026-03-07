@@ -9,6 +9,7 @@ from sqlalchemy import inspect
 import json
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
+from rebalancer import generate_rebalance_transactions
 
 app = Flask(__name__)
 
@@ -126,10 +127,21 @@ def calculate_portfolio_allocation(user, exchange_rates):
     total_value = 0
 
     for account in user.accounts:
+        # Add cash balance to total portfolio value
+        cash_balance = account.cash_balance or 0.0
+        
+        # Convert cash to base currency if needed
+        if account.currency != user.base_currency:
+            cash_key = f"{account.currency}_TO_{user.base_currency}"
+            cash_balance *= exchange_rates.get(cash_key, 1.0)
+        
+        total_value += cash_balance
+        
+        # Add holdings
         for holding in account.holdings:
             value = holding.market_value_in_base_currency(exchange_rates)
             if holding.asset_class_id is None:
-                continue  # or handle unclassified holdings separately
+                continue
             allocation[holding.asset_class_id] += value
             total_value += value
 
@@ -139,7 +151,6 @@ def calculate_portfolio_allocation(user, exchange_rates):
         allocation_pct[asset_class_id] = (value / total_value * 100) if total_value > 0 else 0
 
     return allocation, allocation_pct, total_value
-
 
 def fetch_prices_from_user_sheet(user):
     """Read prices from the user's Google Sheet using their OAuth token."""
@@ -245,268 +256,6 @@ def prioritize_accounts_for_sell(accounts, prefer_registered=True):
     ))
     return sorted_accounts
 
-def generate_rebalance_transactions(user):
-    """Generate minimal rebalance transactions at portfolio level
-    
-    Simple Approach:
-    - Calculate portfolio-level imbalances
-    - For each underweight asset class, find best account to buy it
-    - Generate sells in that same account to fund the buy
-    - Minimize transactions by being selective about what to rebalance
-    """
-        
-    # REFRESH PRICES FIRST
-    try:
-        prices = fetch_prices_from_user_sheet(user)
-        
-        if prices:
-            holdings = (
-                Holding.query
-                .join(Account)
-                .join(Security)
-                .filter(
-                    Account.user_id == user.id,
-                    Security.is_public.is_(True),
-                    Security.auto_update_price.is_(True)
-                )
-                .all() 
-            )
-            
-            for holding in holdings:
-                symbol = holding.security.ticker
-                price = prices.get(symbol)
-                if price is not None:
-                    holding.price = float(price)
-                    holding.updated_at = datetime.utcnow()
-        
-            db.session.commit()
-        
-        # Refresh exchange rates
-        fetch_exchange_rate('USD', 'CAD')
-        fetch_exchange_rate('CAD', 'USD')
-
-    except Exception as e:
-        print(f"Warning: Could not refresh prices: {e}")
-
-    exchange_rates = get_exchange_rates(user)
-
-    # Clear old unexecuted transactions
-    RebalanceTransaction.query.filter_by(user_id=user.id, executed=False).delete()
-
-    # Calculate portfolio-level deltas
-    deltas, total_portfolio = calculate_asset_class_deltas(user, exchange_rates)
-
-    # Get balanced threshold
-    balanced_threshold = user.balanced_threshold or 0.5
-
-    # Filter out balanced asset classes
-    deltas = [d for d in deltas if abs(d['percentage_diff']) > balanced_threshold]
-
-    if not deltas:
-        db.session.commit()
-        return []
-
-    # Additional filter for trading costs if enabled
-    if user.trading_costs_enabled:
-        deltas = [d for d in deltas if abs(d['percentage_diff']) >= 0.1]
-
-    # Separate into overweight and underweight
-    overweight = {d['asset_class_id']: abs(d['dollar_diff']) for d in deltas if d['dollar_diff'] < 0}
-    underweight = {d['asset_class_id']: abs(d['dollar_diff']) for d in deltas if d['dollar_diff'] > 0}
-
-    transactions = []
-    execution_order = 1
-    
-    # Track what still needs to be sold/bought
-    remaining_to_sell = overweight.copy()
-    remaining_to_buy = underweight.copy()
-
-    # Process each underweight asset class (things we need to BUY)
-    for asset_class_id, buy_amount in underweight.items():
-        # Find the best account to buy this asset class
-        # Prioritize: accounts with existing holdings of this class > registered > largest accounts
-        
-        candidate_accounts = []
-        for account in user.accounts:
-            has_existing = any(
-                h.security and h.security.asset_class_id == asset_class_id 
-                for h in account.holdings
-            )
-            
-            # Check if we can sell overweight positions in this account to fund the buy
-            sellable_value = 0
-            for holding in account.holdings:
-                if holding.security and holding.security.asset_class_id in remaining_to_sell:
-                    sellable_value += holding.market_value
-            
-            account_value = sum(h.market_value for h in account.holdings)
-            
-            candidate_accounts.append({
-                'account': account,
-                'has_existing': has_existing,
-                'sellable_value': sellable_value,
-                'account_value': account_value,
-                'is_registered': account.is_registered
-            })
-        
-        # Sort: existing > sellable value > registered > largest
-        candidate_accounts.sort(key=lambda x: (
-            not x['has_existing'],
-            -x['sellable_value'],
-            not x['is_registered'],
-            -x['account_value']
-        ))
-        
-        if not candidate_accounts:
-            continue
-        
-        best_account = candidate_accounts[0]['account']
-        
-        # Generate SELL transactions in this account to fund the buy
-        cash_available = best_account.cash_balance
-        cash_needed = buy_amount
-        
-        for holding in best_account.holdings:
-            if cash_needed <= 0.01:
-                break
-            
-            if not holding.security or not holding.security.asset_class_id:
-                continue
-            
-            # Only sell if this asset class is overweight portfolio-wide
-            if holding.security.asset_class_id not in remaining_to_sell:
-                continue
-            
-            amount_to_sell = min(cash_needed, holding.market_value, remaining_to_sell[holding.security.asset_class_id])
-            
-            quantity_to_sell = int(amount_to_sell / holding.price)
-            actual_sell = quantity_to_sell * holding.price
-            
-            if quantity_to_sell < 1:
-                continue
-            
-            txn = RebalanceTransaction(
-                user_id=user.id,
-                account_id=best_account.id,
-                security_id=holding.security_id,
-                action='SELL',
-                quantity=quantity_to_sell,
-                price=holding.price,
-                amount=actual_sell,
-                currency=holding.security.currency,
-                execution_order=execution_order,
-                is_final_trade=False
-            )
-            db.session.add(txn)
-            transactions.append(txn)
-            execution_order += 1
-            
-            remaining_to_sell[holding.security.asset_class_id] -= actual_sell
-            cash_available += actual_sell
-            cash_needed -= actual_sell
-        
-        # Generate BUY transaction
-        amount_to_buy = min(buy_amount, cash_available)
-        
-        if amount_to_buy < 1:
-            continue
-        
-        # Find eligible securities for this asset class in this account
-        securities = Security.query.filter_by(asset_class_id=asset_class_id).all()
-        
-        eligible = []
-        for security in securities:
-            preference = SecurityPreference.query.filter_by(
-                user_id=user.id,
-                security_id=security.id
-            ).first()
-            
-            can_use = True
-            if preference:
-                if preference.restriction_type == 'restricted_to_accounts':
-                    if preference.account_config and preference.account_config.get('allowed'):
-                        can_use = best_account.id in preference.account_config['allowed']
-                elif preference.restriction_type == 'prioritized_accounts':
-                    if preference.account_config and preference.account_config.get('priority_1'):
-                        can_use = best_account.id in preference.account_config['priority_1']
-            
-            if can_use:
-                existing = any(h.security_id == security.id for h in best_account.holdings)
-                eligible.append({'security': security, 'existing': existing})
-        
-        if not eligible:
-            continue
-        
-        # Prefer existing holdings
-        eligible.sort(key=lambda x: (not x['existing'], x['security'].id))
-        
-        if len(eligible) > 1:
-            txn = RebalanceTransaction(
-                user_id=user.id,
-                account_id=best_account.id,
-                action='BUY',
-                quantity=0,
-                price=0,
-                amount=amount_to_buy,
-                currency=best_account.currency,
-                execution_order=execution_order,
-                requires_user_selection=True,
-                available_securities=[s['security'].id for s in eligible],
-                is_final_trade=False
-            )
-            db.session.add(txn)
-            transactions.append(txn)
-            execution_order += 1
-        else:
-            security = eligible[0]['security']
-            
-            # Get price
-            existing_holding = next((h for h in best_account.holdings if h.security_id == security.id), None)
-            if existing_holding:
-                price = existing_holding.price
-            else:
-                any_holding = Holding.query.filter_by(security_id=security.id).first()
-                price = any_holding.price if any_holding else None
-            
-            if not price or price <= 0:
-                continue
-            
-            quantity = int(amount_to_buy / price)
-            actual_buy = quantity * price
-            
-            if quantity < 1:
-                continue
-            
-            txn = RebalanceTransaction(
-                user_id=user.id,
-                account_id=best_account.id,
-                security_id=security.id,
-                action='BUY',
-                quantity=quantity,
-                price=price,
-                amount=actual_buy,
-                currency=security.currency,
-                execution_order=execution_order,
-                is_final_trade=False
-            )
-            db.session.add(txn)
-            transactions.append(txn)
-            execution_order += 1
-        
-        remaining_to_buy[asset_class_id] -= amount_to_buy
-
-    # Mark final BUY per account as fractional
-    account_last_buy = {}
-    for txn in transactions:
-        if txn.action == 'BUY':
-            account_last_buy[txn.account_id] = txn
-
-    for account_id, last_txn in account_last_buy.items():
-        last_txn.is_final_trade = True
-
-    db.session.commit()
-    return transactions
-
 
 # ============================================================================
 # ROUTES
@@ -535,8 +284,9 @@ def dashboard():
         for holding in account.holdings:
             total_value += holding.market_value_in_base_currency(exchange_rates)
     
-    # Calculate current allocation
-    allocation, allocation_pct, _ = calculate_portfolio_allocation(current_user, exchange_rates)
+    # Calculate current allocation and total portfolio value (including cash)
+    allocation, allocation_pct, total_value = calculate_portfolio_allocation(current_user, exchange_rates)
+
     
     return render_template('dashboard.html', 
                          user=current_user,
@@ -1007,24 +757,14 @@ def rebalance():
     # Get all asset classes
     asset_classes = AssetClass.query.all()
     
-    # Calculate current allocation by asset class ID
-    allocation_by_id = {}
-    allocation_pct_by_id = {}
-    total_portfolio = 0
+    asset_classes = AssetClass.query.all()
     
-    for account in current_user.accounts:
-        for holding in account.holdings:
-            if holding.security and holding.security.asset_class_id:
-                value_in_base = holding.market_value_in_base_currency(exchange_rates)
-                asset_class_id = holding.security.asset_class_id
-                allocation_by_id[asset_class_id] = allocation_by_id.get(asset_class_id, 0) + value_in_base
-                total_portfolio += value_in_base
-    
-    # Calculate percentages
-    if total_portfolio > 0:
-        for asset_class_id, value in allocation_by_id.items():
-            allocation_pct_by_id[asset_class_id] = (value / total_portfolio) * 100
-    
+    # Calculate current allocation (including cash)
+    allocation_by_id, allocation_pct_by_id, total_portfolio = calculate_portfolio_allocation(current_user, exchange_rates)
+
+    # Get targets
+    targets = Target.query.filter_by(user_id=current_user.id).all()
+
     # Get targets
     targets = Target.query.filter_by(user_id=current_user.id).all()
     
@@ -1245,6 +985,7 @@ def update_settings():
     base_currency = request.form.get('base_currency')
     price_sheet_id = request.form.get('price_sheet_id')
     trading_costs_enabled = request.form.get('trading_costs_enabled') == 'on'
+    precision_rebalancing = request.form.get('precision_rebalancing') == 'on'
     
     if base_currency in ['CAD', 'USD']:
         current_user.base_currency = base_currency
@@ -1256,6 +997,7 @@ def update_settings():
         current_user.price_sheet_id = price_sheet_id.strip()
     
     current_user.trading_costs_enabled = trading_costs_enabled
+    current_user.precision_rebalancing = precision_rebalancing 
     current_user.balanced_threshold = float(request.form.get('balanced_threshold', 0.5))
     
     db.session.commit()

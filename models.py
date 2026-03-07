@@ -16,6 +16,7 @@ class User(UserMixin, db.Model):
     last_login = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     trading_costs_enabled = db.Column(db.Boolean, default=False)
     balanced_threshold = db.Column(db.Float, default=0.5)
+    precision_rebalancing = db.Column(db.Boolean, default=True)
 
     # OAuth token storage
     google_token = db.Column(db.Text)  # JSON string of the token dict
