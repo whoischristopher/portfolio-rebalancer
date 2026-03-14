@@ -152,6 +152,75 @@ def calculate_portfolio_allocation(user, exchange_rates):
 
     return allocation, allocation_pct, total_value
 
+def calculate_security_deltas(user, exchange_rates):
+    """
+    Compute per-security net target vs current deltas.
+
+    Returns:
+      security_totals: {
+        security_id: {
+          "security": Security,
+          "asset_class_id": int,
+          "total_value": float,   # in base currency
+          "by_account": {account_id: value_in_base, ...},
+        }, ...
+      }
+      desired_security_delta: {security_id: value_delta_in_base}
+    """
+    # 1) aggregate current values by security
+    security_totals = {}
+    for account in user.accounts:
+        for holding in account.holdings:
+            if not holding.security or not holding.security.asset_class_id:
+                continue
+
+            sec = holding.security
+            sec_id = sec.id
+            value = holding.market_value_in_base_currency(exchange_rates)
+
+            if sec_id not in security_totals:
+                security_totals[sec_id] = {
+                    "security": sec,
+                    "asset_class_id": sec.asset_class_id,
+                    "total_value": 0.0,
+                    "by_account": defaultdict(float),
+                }
+
+            security_totals[sec_id]["total_value"] += value
+            security_totals[sec_id]["by_account"][account.id] += value
+
+    # 2) get asset-class-level targets (existing code)
+    deltas, total_portfolio = calculate_asset_class_deltas(user, exchange_rates)
+    target_by_class = {
+        d["asset_class_id"]: d["target_value"] for d in deltas
+    }
+
+    # 3) allocate class targets down to securities (simple proportional rule)
+    #    For now: securities in same class keep their current proportions.
+    current_by_class = defaultdict(float)
+    for sec_id, info in security_totals.items():
+        current_by_class[info["asset_class_id"]] += info["total_value"]
+
+    desired_security_delta = {}
+    for sec_id, info in security_totals.items():
+        cls = info["asset_class_id"]
+        current_total = info["total_value"]
+        class_current = current_by_class[cls]
+        class_target = target_by_class.get(cls, class_current)
+
+        if class_current <= 0:
+            # no current holdings in this class; skip or treat separately
+            delta = 0.0
+        else:
+            target_for_security = (
+                current_total / class_current
+            ) * class_target
+            delta = target_for_security - current_total
+
+        desired_security_delta[sec_id] = delta
+
+    return security_totals, desired_security_delta
+
 def fetch_prices_from_user_sheet(user):
     """Read prices from the user's Google Sheet using their OAuth token."""
     

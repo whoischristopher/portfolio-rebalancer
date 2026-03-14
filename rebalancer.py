@@ -1449,23 +1449,31 @@ def score_transaction_plan(plan, user):
     
     return max(score, 0)  # Don't go negative
 
-
 def generate_rebalance_transactions(user):
     """
-    Main entry point: Generate optimal rebalancing transactions
-    
-    Evaluates multiple strategies and selects the best one based on:
-    - Fewest transactions
-    - Fewest new positions created
-    - Tax efficiency (registered account preference)
-    - Delta closure
+    Generate rebalancing transactions using per-security net deltas.
+
+    Steps:
+    - Refresh prices and FX
+    - Compute asset-class targets (existing logic)
+    - Allocate each asset class's target proportionally across its securities
+    - For each security, compute a single net delta (target - current)
+    - Allocate that net delta across accounts according to preferences and cash
     """
-    from app import fetch_prices_from_user_sheet, fetch_exchange_rate, get_exchange_rates, calculate_asset_class_deltas
-    
-    # REFRESH PRICES FIRST
+    from app import (
+        fetch_prices_from_user_sheet,
+        fetch_exchange_rate,
+        get_exchange_rates,
+        calculate_asset_class_deltas,
+    )
+    from collections import defaultdict
+
+    # -------------------------
+    # 1) Refresh prices and FX
+    # -------------------------
     try:
         prices = fetch_prices_from_user_sheet(user)
-        
+
         if prices:
             holdings = (
                 Holding.query
@@ -1474,23 +1482,22 @@ def generate_rebalance_transactions(user):
                 .filter(
                     Account.user_id == user.id,
                     Security.is_public.is_(True),
-                    Security.auto_update_price.is_(True)
+                    Security.auto_update_price.is_(True),
                 )
-                .all() 
+                .all()
             )
-            
+
             for holding in holdings:
                 symbol = holding.security.ticker
                 price = prices.get(symbol)
                 if price is not None:
                     holding.price = float(price)
                     holding.updated_at = datetime.utcnow()
-        
+
             db.session.commit()
-        
-        # Refresh exchange rates
-        fetch_exchange_rate('USD', 'CAD')
-        fetch_exchange_rate('CAD', 'USD')
+
+        fetch_exchange_rate("USD", "CAD")
+        fetch_exchange_rate("CAD", "USD")
 
     except Exception as e:
         print(f"Warning: Could not refresh prices: {e}")
@@ -1498,125 +1505,228 @@ def generate_rebalance_transactions(user):
     exchange_rates = get_exchange_rates(user)
 
     # Clear old unexecuted transactions
-    RebalanceTransaction.query.filter_by(user_id=user.id, executed=False).delete()
+    RebalanceTransaction.query.filter_by(
+        user_id=user.id, executed=False
+    ).delete()
 
-    # Calculate portfolio-level deltas
+    # -------------------------------
+    # 2) Asset-class deltas as before
+    # -------------------------------
     deltas, total_portfolio = calculate_asset_class_deltas(user, exchange_rates)
 
-    # Get balanced threshold
     balanced_threshold = user.balanced_threshold or 0.5
-
-    # Filter out balanced asset classes
-    deltas = [d for d in deltas if abs(d['percentage_diff']) > balanced_threshold]
+    deltas = [d for d in deltas if abs(d["percentage_diff"]) > balanced_threshold]
 
     if not deltas:
         db.session.commit()
         return []
 
-    # Additional filter for trading costs if enabled
     if user.trading_costs_enabled:
-        deltas = [d for d in deltas if abs(d['percentage_diff']) >= 0.1]
+        deltas = [d for d in deltas if abs(d["percentage_diff"]) >= 0.1]
 
-    # Separate overweight and underweight
-    overweight = [(d['asset_class_id'], d['asset_class_name'], abs(d['dollar_diff']), d['percentage_diff']) 
-                  for d in deltas if d['dollar_diff'] < 0]
-    underweight = [(d['asset_class_id'], d['asset_class_name'], abs(d['dollar_diff']), d['percentage_diff']) 
-                   for d in deltas if d['dollar_diff'] > 0]
-    
-    # Sort by absolute % delta
-    overweight.sort(key=lambda x: -abs(x[3]))
-    underweight.sort(key=lambda x: -abs(x[3]))
-    
-    # Track cash per account
-    account_cash = {}
+    # Map asset_class_id -> target value (dollar)
+    target_by_class = {d["asset_class_id"]: d["target_value"] for d in deltas}
+
+    # -------------------------------------------------
+    # 3) Aggregate current holdings by security & class
+    # -------------------------------------------------
+    security_totals = {}
+    current_by_class = defaultdict(float)
+
     for account in user.accounts:
-        cash = account.cash_balance or 0.0
-        if account.currency != user.base_currency:
-            cash_key = f"{account.currency}_TO_{user.base_currency}"
-            cash *= exchange_rates.get(cash_key, 1.0)
-        account_cash[account.id] = cash
-    
-    total_cash = sum(account_cash.values())
-    total_buy = sum(amount for _, _, amount, _ in underweight)
-    total_sell = sum(amount for _, _, amount, _ in overweight)
-    
-    print(f"\n{'='*70}")
-    print(f"MULTI-STRATEGY REBALANCING EVALUATION")
-    print(f"{'='*70}")
-    print(f"Cash available: ${total_cash:,.2f}")
-    print(f"Need to buy: ${total_buy:,.2f}")
-    print(f"Need to sell: ${total_sell:,.2f}")
-    print(f"{'='*70}")
-    
-    # Generate plans using all strategies
-    strategies = [
-        CashFirstStrategy(),
-        MinimizePositionsStrategy(),
-        CashEfficientStrategy(),
-        TaxOptimizedStrategy(),
-        HeuristicStrategy()
-    ]
-    
-    plans = []
-    scores = []
-    
-    for strategy in strategies:
-        try:
-            plan = strategy.generate(user, deltas, overweight, underweight, account_cash, exchange_rates)
-            score = score_transaction_plan(plan, user)
-            plans.append(plan)
-            scores.append(score)
-            
-            stats = plan.get_stats()
-            print(f"\n{strategy.name:20s} → {len(plan):2d} txns, "
-                  f"{stats['new_positions']} new positions, "
-                  f"{stats['registered_sells']} registered sells, "
-                  f"score: {score}/100")
-        except Exception as e:
-            print(f"\n{strategy.name:20s} → FAILED: {e}")
-            plans.append(None)
-            scores.append(-1)
-    
-    # Select best plan
-    if not plans or all(p is None for p in plans):
-        print("\nNo valid plans generated!")
+        for holding in account.holdings:
+            if not holding.security or not holding.security.asset_class_id:
+                continue
+
+            sec = holding.security
+            sec_id = sec.id
+            cls_id = sec.asset_class_id
+            value = holding.market_value_in_base_currency(exchange_rates)
+
+            if sec_id not in security_totals:
+                security_totals[sec_id] = {
+                    "security": sec,
+                    "asset_class_id": cls_id,
+                    "total_value": 0.0,
+                    "by_account": defaultdict(float),
+                }
+
+            security_totals[sec_id]["total_value"] += value
+            security_totals[sec_id]["by_account"][account.id] += value
+            current_by_class[cls_id] += value
+
+    if not security_totals:
         db.session.commit()
         return []
-    
-    best_idx = scores.index(max(scores))
-    best_plan = plans[best_idx]
-    
-    print(f"\n{'='*70}")
-    print(f"SELECTED: {strategies[best_idx].name} (Score: {scores[best_idx]}/100)")
-    print(f"DEBUG: best_idx={best_idx}, total plans={len(plans)}")
-    print(f"DEBUG: Transaction count in best_plan: {len(best_plan.transactions)}")
-    print(f"{'='*70}\n")
-    
-    # Mark final BUY per account as fractional
+
+    # ------------------------------------------------------------
+    # 4) Compute per-security net deltas from asset-class targets
+    # ------------------------------------------------------------
+    desired_security_delta = {}
+
+    for sec_id, info in security_totals.items():
+        cls_id = info["asset_class_id"]
+        current_total = info["total_value"]
+        class_current = current_by_class[cls_id]
+
+        # if this class is not in deltas, we skip (treated as "balanced enough")
+        class_target = target_by_class.get(cls_id, class_current)
+
+        if class_current <= 0:
+            # no current value in this class - leave unchanged for now
+            delta = 0.0
+        else:
+            # proportional allocation: keep intra-class proportions
+            target_for_security = (current_total / class_current) * class_target
+            delta = target_for_security - current_total
+
+        desired_security_delta[sec_id] = delta
+
+    # ---------------------------------------
+    # 5) Turn per-security deltas into trades
+    # ---------------------------------------
+    transactions = []
+    execution_order = 1
+    tolerance_value = 1.0  # ignore tiny drifts (1 unit of base currency)
+
+    # Helper: account order for sells (registered first, then by priority)
+    def sell_account_order(accounts):
+        return sorted(
+            accounts,
+            key=lambda a: (
+                not a.is_registered,  # registered first (False < True)
+                -a.priority,
+            ),
+        )
+
+    # Helper: account order for buys (existing position, then registered, then size)
+    def buy_account_order(sec_id, accounts):
+        ordered = []
+        for account in accounts:
+            has_existing = any(
+                h.security_id == sec_id for h in account.holdings
+            )
+            account_value = sum(h.market_value for h in account.holdings)
+            ordered.append(
+                {
+                    "account": account,
+                    "has_existing": has_existing,
+                    "value": account_value,
+                }
+            )
+        ordered.sort(
+            key=lambda x: (
+                not x["has_existing"],
+                not x["account"].is_registered,
+                -x["value"],
+            )
+        )
+        return [x["account"] for x in ordered]
+
+    # Main loop: one pass per security
+    for sec_id, delta_value in desired_security_delta.items():
+        if abs(delta_value) < tolerance_value:
+            continue
+
+        info = security_totals[sec_id]
+        sec = info["security"]
+
+        # get a usable price
+        any_holding = (
+            Holding.query.filter_by(security_id=sec_id)
+            .order_by(Holding.updated_at.desc())
+            .first()
+        )
+        price = any_holding.price if any_holding and any_holding.price > 0 else None
+        if not price or price <= 0:
+            continue
+
+        delta_shares = delta_value / price
+
+        # ---------------------------------
+        # NET SELL (reduce this security)
+        # ---------------------------------
+        if delta_shares < 0:
+            shares_to_sell = abs(delta_shares)
+            for account in sell_account_order(user.accounts):
+                if shares_to_sell <= 0:
+                    break
+
+                holding = next(
+                    (h for h in account.holdings if h.security_id == sec_id),
+                    None,
+                )
+                if not holding or holding.quantity <= 0:
+                    continue
+
+                # Max shares we can/should sell from this account
+                sell_qty = min(holding.quantity, int(shares_to_sell))
+                if sell_qty < 1:
+                    continue
+
+                amount = sell_qty * price
+                txn = RebalanceTransaction(
+                    user_id=user.id,
+                    account_id=account.id,
+                    security_id=sec_id,
+                    action="SELL",
+                    quantity=sell_qty,
+                    price=price,
+                    amount=amount,
+                    currency=sec.currency,
+                    execution_order=execution_order,
+                    is_final_trade=False,
+                )
+                db.session.add(txn)
+                transactions.append(txn)
+                execution_order += 1
+
+                shares_to_sell -= sell_qty
+
+        # ---------------------------------
+        # NET BUY (increase this security)
+        # ---------------------------------
+        else:
+            shares_to_buy = delta_shares
+            for account in buy_account_order(sec_id, user.accounts):
+                if shares_to_buy <= 0:
+                    break
+
+                if account.cash_balance <= 0:
+                    continue
+
+                max_by_cash = account.cash_balance / price
+                buy_qty = int(min(shares_to_buy, max_by_cash))
+                if buy_qty < 1:
+                    continue
+
+                amount = buy_qty * price
+                txn = RebalanceTransaction(
+                    user_id=user.id,
+                    account_id=account.id,
+                    security_id=sec_id,
+                    action="BUY",
+                    quantity=buy_qty,
+                    price=price,
+                    amount=amount,
+                    currency=sec.currency,
+                    execution_order=execution_order,
+                    is_final_trade=False,
+                )
+                db.session.add(txn)
+                transactions.append(txn)
+                execution_order += 1
+
+                shares_to_buy -= buy_qty
+
+    # Mark last BUY per account as final (fractional-friendly)
     account_last_buy = {}
-    for txn in best_plan.transactions:
-        if txn.action == 'BUY':
+    for txn in transactions:
+        if txn.action == "BUY":
             account_last_buy[txn.account_id] = txn
 
-    for account_id, last_txn in account_last_buy.items():
+    for _, last_txn in account_last_buy.items():
         last_txn.is_final_trade = True
-    
-    # Add to database
-    print("\n[SAVING TO DATABASE]")
-
-    # Refresh relationships from database
-    for txn in best_plan.transactions:
-        if txn.security_id:
-            txn.security = Security.query.get(txn.security_id)
-        if txn.account_id:
-            txn.account = Account.query.get(txn.account_id)
-    
-    for txn in best_plan.transactions:
-        ticker = txn.security.ticker if txn.security else '?'
-        account_name = txn.account.name if txn.account else 'NO_ACCOUNT'
-        print(f"  {txn.action} {ticker} - qty={txn.quantity}, account={account_name}")
-        db.session.add(txn)
 
     db.session.commit()
-
-    return best_plan.transactions
+    return transactions
