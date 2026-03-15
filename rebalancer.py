@@ -24,6 +24,7 @@ from extensions import db
 from services.fx import convert_to_base
 from services.portfolio import calculate_portfolio_allocation, calculate_asset_class_deltas
 
+logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 
 # ============================================================================
@@ -208,7 +209,8 @@ class RebalancingStrategy:
             cash_needed = max(0.0, total_buy - cash)
 
             if total_sell > 0 and cash_needed < total_sell:
-                ratio = min(1.0, (cash_needed * 1.02) / total_sell)  # 2% buffer
+//                ratio = min(1.0, (cash_needed * 1.02) / total_sell)  # 2% buffer
+                ratio = 1.0
                 for s in sells:
                     s.quantity = int(s.quantity * ratio)
                     s.amount  *= ratio
@@ -607,10 +609,19 @@ def generate_rebalance_transactions(user) -> list:
 
     threshold = getattr(user, "balanced_threshold", 0.5)
 
-    overweight  = [(d["asset_class_id"], d["asset_class_name"], -d["dollar_diff"], -d["percentage_diff"])
-                   for d in deltas if d["percentage_diff"] < -threshold]
-    underweight = [(d["asset_class_id"], d["asset_class_name"],  d["dollar_diff"],  d["percentage_diff"])
+    overweight  = [(d["asset_class_id"], d["asset_class_name"],  d["dollar_diff"], d["percentage_diff"])
                    for d in deltas if d["percentage_diff"] >  threshold]
+    underweight = [(d["asset_class_id"], d["asset_class_name"], -d["dollar_diff"], -d["percentage_diff"])
+                   for d in deltas if d["percentage_diff"] < -threshold]
+
+    for d in deltas:
+        log.info(
+            "DELTA | %s | current=%.2f%% target=%.2f%% diff=%.2f%% dollar_diff=%.2f",
+            d["asset_class_name"], d["current_pct"], d["target_pct"],
+            d["percentage_diff"], d["dollar_diff"]
+        )
+    log.info("Overweight: %s", overweight)
+    log.info("Underweight: %s", underweight)
 
     if not overweight and not underweight:
         log.info("Portfolio is within threshold; no rebalancing needed.")
@@ -622,15 +633,30 @@ def generate_rebalance_transactions(user) -> list:
     }
 
     best_plan: TransactionPlan | None = None
+    best_residual = None
+
     for strategy in _STRATEGIES:
         try:
             plan = strategy.generate(
                 user, deltas, overweight, underweight,
                 copy.deepcopy(account_cash), exchange_rates,
             )
-            if best_plan is None or plan.score() < best_plan.score():
+
+            # Recalculate deltas after this plan
+            from rebalancer import RebalancingStrategy  # ensure imported above
+            helper = RebalancingStrategy("tmp")
+            updated = helper._recalculate_deltas(deltas, plan.transactions, user, exchange_rates)
+            # Max absolute percentage_diff after plan
+            residual = max(abs(d["percentage_diff"]) for d in updated)
+
+
+            if (best_plan is None or 
+               residual < best_residual or
+               (residual == best_residual and plan.score() < best_plan.score())):
                 best_plan = plan
-                log.debug("New best plan: %s (score=%s)", strategy.name, plan.score())
+                best_residual = residual
+                log.debug("New best plan: %s residual=%.3f score=%s",
+                      strategy.name, residual, plan.score())
         except Exception:
             log.exception("Strategy %s failed; skipping.", strategy.name)
 
@@ -647,5 +673,20 @@ def generate_rebalance_transactions(user) -> list:
         "Rebalance plan generated: %d transactions via %s strategy.",
         len(best_plan), best_plan.metadata.get("strategy"),
     )
+
+    for t in best_plan.transactions:
+        log.info(
+            "TXN | %s | %s | %s | qty=%.4f price=%.2f amount=%.2f %s",
+            best_plan.metadata.get("strategy"),
+            t.action,
+            t.account.name if t.account else t.account_id,
+            t.quantity,
+            t.price,
+            t.amount,
+            t.security.ticker if t.security else "N/A",
+        )
+    log.info("Chosen plan strategy=%s, num_txns=%d",
+         best_plan.metadata.get("strategy"), len(best_plan))
+
     return best_plan.transactions
 
