@@ -34,7 +34,6 @@ from services.fx import get_exchange_rates
 from services.portfolio import (
     calculate_portfolio_allocation,
     calculate_asset_class_deltas,
-    calculate_security_deltas,
 )
 from services.prices import fetch_prices_from_user_sheet
 from rebalancer import generate_rebalance_transactions

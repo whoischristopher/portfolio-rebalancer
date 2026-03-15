@@ -609,10 +609,11 @@ def generate_rebalance_transactions(user) -> list:
 
     threshold = getattr(user, "balanced_threshold", 0.5)
 
-    overweight  = [(d["asset_class_id"], d["asset_class_name"],  d["dollar_diff"], d["percentage_diff"])
-                   for d in deltas if d["percentage_diff"] >  threshold]
+    overweight  = [(d["asset_class_id"], d["asset_class_name"],  d["dollar_diff"],  d["percentage_diff"])
+               for d in deltas if d["percentage_diff"] >  threshold]
     underweight = [(d["asset_class_id"], d["asset_class_name"], -d["dollar_diff"], -d["percentage_diff"])
-                   for d in deltas if d["percentage_diff"] < -threshold]
+               for d in deltas if d["percentage_diff"] < -threshold]
+
 
     for d in deltas:
         log.info(
