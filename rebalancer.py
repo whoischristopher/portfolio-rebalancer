@@ -326,7 +326,7 @@ class RebalancingStrategy:
                 if not eligible:
                     continue
 
-                my_priority = min(e.get("priority", 99) for e in eligible_here)
+                my_priority = min(e.get("priority", 99) for e in eligible)
                 if my_priority > 1:
                     best_possible_priority = min(
                         (
