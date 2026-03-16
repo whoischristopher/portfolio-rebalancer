@@ -326,7 +326,7 @@ class RebalancingStrategy:
                 if not eligible:
                     continue
 
-                my_priority = min(e.get("priority", 99) for e in eligible)
+                my_priority = min(e.get("priority", 99) for e in eligible_here)
                 if my_priority > 1:
                     best_possible_priority = min(
                         (
@@ -343,27 +343,30 @@ class RebalancingStrategy:
                     if my_priority > best_possible_priority:
                         continue
 
-                # Use direct DB queries to avoid SQLAlchemy lazy-load issues
-                from sqlalchemy import exists
-                portfolio_has_class = db.session.query(
-                    db.session.query(Holding)
-                    .join(Security)
-                    .join(Account)
-                    .filter(Account.user_id == user.id)
-                    .filter(Security.asset_class_id == ac_id)
-                    .exists()
-                ).scalar()
-
-                if portfolio_has_class:
-                    account_has_class = db.session.query(
-                        db.session.query(Holding)
-                        .filter(Holding.account_id == account.id)
-                        .join(Security)
+                # Skip the "stay where it lives" guard when an explicit priority preference exists
+                has_explicit_priority_pref = any(
+                    p.restriction_type == "prioritized_accounts"
+                    for p in SecurityPreference.query.filter_by(user_id=user.id).all()
+                    if Security.query.get(p.security_id) is not None
+                    and Security.query.get(p.security_id).asset_class_id == ac_id
+                )
+                if not has_explicit_priority_pref:
+                    portfolio_has_class = db.session.query(
+                        db.session.query(Holding).join(Security).join(Account)
+                        .filter(Account.user_id == user.id)
                         .filter(Security.asset_class_id == ac_id)
                         .exists()
                     ).scalar()
-                    if not account_has_class:
-                        continue
+                    if portfolio_has_class and not has_existing:
+                        account_has_class = db.session.query(
+                            db.session.query(Holding)
+                            .filter(Holding.account_id == account.id)
+                            .join(Security)
+                            .filter(Security.asset_class_id == ac_id)
+                            .exists()
+                        ).scalar()
+                        if not account_has_class:
+                            continue
 
                 amount_to_buy = min(remaining_to_buy[ac_id], cash)
 
