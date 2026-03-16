@@ -310,18 +310,26 @@ class RebalancingStrategy:
                 if not eligible:
                     continue
 
-                security_exists_in_portfolio = any(
-                    h.security and h.security.asset_class_id == ac_id
-                    for a in user.accounts
-                    for h in a.holdings
-                )
-                if security_exists_in_portfolio:
-                    # Only buy in accounts that already hold something in this asset class
-                    account_has_this_class = any(
-                        h.security and h.security.asset_class_id == ac_id
-                        for h in account.holdings
-                    )
-                    if not account_has_this_class:
+                # Use direct DB queries to avoid SQLAlchemy lazy-load issues
+                from sqlalchemy import exists
+                portfolio_has_class = db.session.query(
+                    db.session.query(Holding)
+                    .join(Security)
+                    .join(Account)
+                    .filter(Account.user_id == user.id)
+                    .filter(Security.asset_class_id == ac_id)
+                    .exists()
+                ).scalar()
+
+                if portfolio_has_class:
+                    account_has_class = db.session.query(
+                        db.session.query(Holding)
+                        .filter(Holding.account_id == account.id)
+                        .join(Security)
+                        .filter(Security.asset_class_id == ac_id)
+                        .exists()
+                    ).scalar()
+                    if not account_has_class:
                         continue
 
                 amount_to_buy = min(remaining_to_buy[ac_id], cash)
@@ -508,13 +516,26 @@ class HeuristicStrategy(RebalancingStrategy):
                         for h in account.holdings
                     )
                     # Skip if another account already holds this asset class and this one doesn't
-                    class_exists_in_portfolio = any(
-                        h.security and h.security.asset_class_id == ac_id
-                        for a in user.accounts
-                        for h in a.holdings
-                    )
-                    if class_exists_in_portfolio and not has_existing:
-                        continue
+                    portfolio_has_class = db.session.query(
+                        db.session.query(Holding)
+                        .join(Security)
+                        .join(Account)
+                        .filter(Account.user_id == user.id)
+                        .filter(Security.asset_class_id == ac_id)
+                        .exists()
+                    ).scalar()
+
+                    if portfolio_has_class and not has_existing:
+                        account_has_class = db.session.query(
+                            db.session.query(Holding)
+                            .filter(Holding.account_id == account.id)
+                            .join(Security)
+                            .filter(Security.asset_class_id == ac_id)
+                            .exists()
+                        ).scalar()
+                        if not account_has_class:
+                            continue
+
                     sc = self._score(account, ac_id, cash, pct_diff, has_existing)
 
                     if sc > best_score:
