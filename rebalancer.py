@@ -507,7 +507,16 @@ class HeuristicStrategy(RebalancingStrategy):
                         h.security and h.security.asset_class_id == ac_id
                         for h in account.holdings
                     )
+                    # Skip if another account already holds this asset class and this one doesn't
+                    class_exists_in_portfolio = any(
+                        h.security and h.security.asset_class_id == ac_id
+                        for a in user.accounts
+                        for h in a.holdings
+                    )
+                    if class_exists_in_portfolio and not has_existing:
+                        continue
                     sc = self._score(account, ac_id, cash, pct_diff, has_existing)
+
                     if sc > best_score:
                         best_score  = sc
                         best_choice = (account, ac_id, min(cash, remaining_to_buy[ac_id]))
@@ -515,6 +524,8 @@ class HeuristicStrategy(RebalancingStrategy):
             if not best_choice:
                 break
             account, ac_id, amount_to_buy = best_choice
+            if amount_to_buy < 500:   # skip tiny buys
+                break
 
             # Top up existing BUY if one already exists for this asset class in this account
             existing_buy = next(
