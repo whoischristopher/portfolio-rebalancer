@@ -25,14 +25,14 @@ class TransactionPlan:
     def __len__(self):
         return len(self.transactions)
 
-    def score(self) -> tuple:
+    def score(self, user) -> tuple:
         new_positions = 0
         registered_sells = 0
         accounts_cache: dict = {}
 
         # Build a portfolio-wide set of existing security IDs
         all_held_security_ids = set()
-        for acc in Account.query.all():
+        for acc in Account.query.filter_by(user_id=user.id).all():
             for h in acc.holdings:
                 all_held_security_ids.add(h.security_id)
 
@@ -164,6 +164,10 @@ class RebalancingStrategy:
         sell_map: dict = {}
         buy_map:  dict = {}
 
+        if txn.security_id is None:
+            result.append(txn)
+            continue
+
         for txn in transactions:
             key = (txn.account_id, txn.security_id)
             if txn.action == "SELL":
@@ -227,7 +231,8 @@ class RebalancingStrategy:
                 d["current_value"] -= amount_base
                 d["dollar_diff"]   += amount_base
             if portfolio_total > 0:
-                d["percentage_diff"] = d["target"].target_percentage - (d["current_value"] / portfolio_total * 100)
+                d["percentage_diff"] = (d["current_value"] / portfolio_total * 100) - d["target"].target_percentage
+
         return list(delta_map.values())
 
     def _precision_tune(self, user, deltas, account_cash, transactions, execution_order, exchange_rates):

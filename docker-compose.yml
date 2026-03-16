@@ -11,7 +11,7 @@ services:
       - SECRET_KEY=${SECRET_KEY}
       - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
       - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
-      - DATABASE_URL=${DATABASE_URL}
+      - DATABASE_URL=sqlite:////app/data/portfolio.db  # 4 slashes = absolute path
     volumes:
       - .:/app 
       - ./data:/app/data

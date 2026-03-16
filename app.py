@@ -197,11 +197,8 @@ def add_holding():
     holding = Holding(
         account_id=account_id,
         security_id=security_id,
-        ticker=security.ticker,
         quantity=float(quantity),
         price=float(price) if price else 0.0,
-        currency=security.currency,
-        asset_class_id=security.asset_class_id,
     )
     db.session.add(holding)
     db.session.commit()
@@ -220,7 +217,6 @@ def edit_holding(holding_id):
         holding.account_id = request.form.get('account_id')
         holding.quantity = float(request.form.get('quantity', 0))
         holding.price = float(request.form.get('price', 0))
-        holding.asset_class_id = request.form.get('asset_class_id')
         holding.security_id = request.form.get('security_id')
         holding.notes = request.form.get('notes')
         db.session.commit()
@@ -750,10 +746,9 @@ def forbidden(error):
 # ---------------------------------------------------------------------------
 def _init_db():
     with app.app_context():
-        inspector = inspect(db.engine)
-        if not inspector.get_table_names():
-            db.create_all()
-            log.info('Database tables created.')
+        db.create_all()
+        log.info('Database schema ensured.')
+
 
 _init_db()
 
