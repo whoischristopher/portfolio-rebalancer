@@ -552,7 +552,7 @@ class HeuristicStrategy(RebalancingStrategy):
                         continue
 
                     eligible_here = self._eligible_securities(ac_id, account, user)
-
+                    my_priority = min(e.get("priority", 99) for e in eligible_here)
                     if my_priority > 1:
                         best_possible_priority = min(
                             (
@@ -573,26 +573,30 @@ class HeuristicStrategy(RebalancingStrategy):
                         h.security and h.security.asset_class_id == ac_id
                         for h in account.holdings
                     )
-                    # Skip if another account already holds this asset class and this one doesn't
-                    portfolio_has_class = db.session.query(
-                        db.session.query(Holding)
-                        .join(Security)
-                        .join(Account)
-                        .filter(Account.user_id == user.id)
-                        .filter(Security.asset_class_id == ac_id)
-                        .exists()
-                    ).scalar()
-
-                    if portfolio_has_class and not has_existing:
-                        account_has_class = db.session.query(
-                            db.session.query(Holding)
-                            .filter(Holding.account_id == account.id)
-                            .join(Security)
+                    # Skip the "stay where it lives" guard when an explicit priority preference exists
+                    has_explicit_priority_pref = any(
+                        p.restriction_type == "prioritized_accounts"
+                        for p in SecurityPreference.query.filter_by(user_id=user.id).all()
+                        if Security.query.get(p.security_id) is not None
+                        and Security.query.get(p.security_id).asset_class_id == ac_id
+                    )
+                    if not has_explicit_priority_pref:
+                        portfolio_has_class = db.session.query(
+                            db.session.query(Holding).join(Security).join(Account)
+                            .filter(Account.user_id == user.id)
                             .filter(Security.asset_class_id == ac_id)
                             .exists()
                         ).scalar()
-                        if not account_has_class:
-                            continue
+                        if portfolio_has_class and not has_existing:
+                            account_has_class = db.session.query(
+                                db.session.query(Holding)
+                                .filter(Holding.account_id == account.id)
+                                .join(Security)
+                                .filter(Security.asset_class_id == ac_id)
+                                .exists()
+                            ).scalar()
+                            if not account_has_class:
+                                continue
 
                     sc = self._score(account, ac_id, cash, pct_diff, has_existing)
 
