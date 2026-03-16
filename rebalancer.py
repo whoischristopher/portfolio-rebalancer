@@ -163,6 +163,7 @@ class RebalancingStrategy:
         """
         sell_map: dict = {}
         buy_map:  dict = {}
+        result = []
 
         for txn in transactions:
             if txn.security_id is None:
@@ -182,7 +183,6 @@ class RebalancingStrategy:
                 else:
                     buy_map[key] = txn
 
-        result = []
         all_keys = set(list(sell_map.keys()) + list(buy_map.keys()))
 
         for key in all_keys:
