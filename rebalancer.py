@@ -327,17 +327,19 @@ class RebalancingStrategy:
                     continue
 
                 my_priority = min(e.get("priority", 99) for e in eligible)
-                if my_priority > 1:  # only bother checking if we're not already priority 1
-                    better_exists = any(
-                        account_cash.get(a.id, 0) >= 500
-                        and a.id != account.id
-                        and any(
-                            e.get("priority", 99) < my_priority
-                            for e in self._eligible_securities(ac_id, a, user)
-                        )
-                        for a in user.accounts
+                if my_priority > 1:
+                    best_possible_priority = min(
+                        (
+                            min(
+                                (e.get("priority", 99) for e in self._eligible_securities(ac_id, a, user)),
+                                default=99
+                            )
+                            for a in user.accounts
+                            if a.id != account.id
+                        ),
+                        default=99,
                     )
-                    if better_exists:
+                    if my_priority > best_possible_priority:
                         continue
 
                 # Use direct DB queries to avoid SQLAlchemy lazy-load issues
@@ -549,18 +551,21 @@ class HeuristicStrategy(RebalancingStrategy):
                         continue
 
                     eligible_here = self._eligible_securities(ac_id, account, user)
-                    my_priority = min(e.get("priority", 99) for e in eligible_here)
+
+                    my_priority = min(e.get("priority", 99) for e in eligible)
                     if my_priority > 1:
-                        better_exists = any(
-                            account_cash.get(a.id, 0) >= 500
-                            and a.id != account.id
-                            and any(
-                                e.get("priority", 99) < my_priority
-                                for e in self._eligible_securities(ac_id, a, user)
-                            )
-                            for a in user.accounts
+                        best_possible_priority = min(
+                            (
+                                min(
+                                    (e.get("priority", 99) for e in self._eligible_securities(ac_id, a, user)),
+                                    default=99
+                                )
+                                for a in user.accounts
+                                if a.id != account.id
+                            ),
+                            default=99,
                         )
-                        if better_exists:
+                        if my_priority > best_possible_priority:
                             continue
 
                     has_existing = any(
