@@ -598,8 +598,15 @@ def execute_rebalance_transaction(transaction_id):
         txn.executed = True
         txn.executed_at = datetime.utcnow()
         db.session.commit()
-        generate_rebalance_transactions(current_user)
         flash(f'Executed: {txn.action} {txn.quantity:.2f} of {txn.security.ticker}', 'success')
+
+        # Regen is best-effort — don't let it mask the successful trade
+        try:
+            generate_rebalance_transactions(current_user)
+        except Exception as regen_exc:
+            log.warning('Post-execution regen failed (non-fatal): %s', regen_exc)
+            flash('Trade executed, but plan could not be regenerated automatically. Refresh manually.', 'warning')
+
     except ValueError as exc:
         db.session.rollback()
         flash(str(exc), 'error')

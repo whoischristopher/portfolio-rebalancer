@@ -164,11 +164,10 @@ class RebalancingStrategy:
         sell_map: dict = {}
         buy_map:  dict = {}
 
-        if txn.security_id is None:
-            result.append(txn)
-            continue
-
         for txn in transactions:
+            if txn.security_id is None:
+                result.append(txn) 
+                continue
             key = (txn.account_id, txn.security_id)
             if txn.action == "SELL":
                 if key in sell_map:
@@ -408,6 +407,13 @@ class RebalancingStrategy:
             transactions, execution_order,
         )
 
+        # Phase 2b: apply sell limiting HERE, before Phase 3
+        transactions = self._apply_sell_limiting(transactions, original_cash, user, exchange_rates)
+        # Recompute account_cash to reflect limited sell amounts
+        for txn in transactions:
+            if txn.action == "SELL":
+                account_cash[txn.account_id] = original_cash.get(txn.account_id, 0.0) + txn.amount
+
         # Phase 3: buys funded by sell proceeds
         transactions, execution_order, account_cash = self._execute_buys(
             user, accounts_sorted, underweight, remaining_to_buy, account_cash,
@@ -420,7 +426,6 @@ class RebalancingStrategy:
             user, updated_deltas, account_cash, transactions, execution_order, exchange_rates,
         )
 
-        transactions = self._apply_sell_limiting(transactions, original_cash, user, exchange_rates)
         transactions = self._consolidate_transactions(transactions)
         return TransactionPlan(transactions, {"strategy": self.name})
 
@@ -669,11 +674,11 @@ def generate_rebalance_transactions(user) -> list:
 
             if (best_plan is None or
                 residual < best_residual or
-                (residual == best_residual and plan.score() < best_plan.score())):
+                (residual == best_residual and plan.score(user) < best_plan.score(user))):
                 best_plan     = plan
                 best_residual = residual
                 log.info("New best plan: %s residual=%.3f score=%s",
-                         strategy.name, residual, plan.score())
+                         strategy.name, residual, plan.score(user))
         except Exception as exc:
             log.error("Strategy %s failed: %s", strategy.name, exc, exc_info=True)
 

@@ -90,10 +90,11 @@ class Holding(db.Model):
         return self.quantity * self.price
     
     def market_value_in_base_currency(self, exchange_rates):
-        '''Convert market value to base currency'''
         value = self.market_value
-        if self.security.currency != self.account.user.base_currency:
-            rate = exchange_rates.get(f"{self.currency}_TO_{self.account.user.base_currency}", 1.0)
+        sec_currency = self.security.currency  # single source of truth
+        base_currency = self.account.user.base_currency
+        if sec_currency != base_currency:
+            rate = exchange_rates.get(f"{sec_currency}_TO_{base_currency}", 1.0)
             value *= rate
         return value
 
