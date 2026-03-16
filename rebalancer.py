@@ -553,22 +553,6 @@ class HeuristicStrategy(RebalancingStrategy):
 
                     eligible_here = self._eligible_securities(ac_id, account, user)
 
-                    my_priority = min(e.get("priority", 99) for e in eligible_here)
-                    if my_priority > 1:
-                        best_possible_priority = min(
-                            (
-                                min(
-                                    (e.get("priority", 99) for e in self._eligible_securities(ac_id, a, user)),
-                                    default=99
-                                )
-                                for a in user.accounts
-                                if a.id != account.id
-                            ),
-                            default=99,
-                        )
-                        if my_priority > best_possible_priority:
-                            continue
-
                     if my_priority > 1:
                         best_possible_priority = min(
                             (
