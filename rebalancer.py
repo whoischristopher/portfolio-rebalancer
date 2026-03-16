@@ -65,13 +65,25 @@ class RebalancingStrategy:
         for sec in securities:
             pref = prefs.get(sec.id)
             allowed = True
+            priority = 99  # unlisted = lowest priority
+
             if pref and pref.restriction_type == "restricted_to_accounts":
                 allowed_ids = (pref.account_config or {}).get("allowed", [])
                 allowed = account.id in allowed_ids
+
+            elif pref and pref.restriction_type == "prioritized_accounts":
+                cfg = pref.account_config or {}
+                for level in (1, 2, 3):
+                    if account.id in cfg.get(f"priority_{level}", []):
+                        priority = level
+                        break
+                # accounts not listed remain allowed but at priority 99
+
             if allowed:
                 existing = any(h.security_id == sec.id for h in account.holdings)
-                result.append({"security": sec, "existing": existing})
+                result.append({"security": sec, "existing": existing, "priority": priority})
         return result
+
 
     def _create_sell_transaction(self, user, account, holding, sell_value, execution_order):
         quantity = int(sell_value / holding.price)
@@ -314,6 +326,20 @@ class RebalancingStrategy:
                 if not eligible:
                     continue
 
+                my_priority = min(e.get("priority", 99) for e in eligible)
+                if my_priority > 1:  # only bother checking if we're not already priority 1
+                    better_exists = any(
+                        account_cash.get(a.id, 0) >= 500
+                        and a.id != account.id
+                        and any(
+                            e.get("priority", 99) < my_priority
+                            for e in self._eligible_securities(ac_id, a, user)
+                        )
+                        for a in user.accounts
+                    )
+                    if better_exists:
+                        continue
+
                 # Use direct DB queries to avoid SQLAlchemy lazy-load issues
                 from sqlalchemy import exists
                 portfolio_has_class = db.session.query(
@@ -521,6 +547,22 @@ class HeuristicStrategy(RebalancingStrategy):
                         continue
                     if not self._eligible_securities(ac_id, account, user):
                         continue
+
+                    eligible_here = self._eligible_securities(ac_id, account, user)
+                    my_priority = min(e.get("priority", 99) for e in eligible_here)
+                    if my_priority > 1:
+                        better_exists = any(
+                            account_cash.get(a.id, 0) >= 500
+                            and a.id != account.id
+                            and any(
+                                e.get("priority", 99) < my_priority
+                                for e in self._eligible_securities(ac_id, a, user)
+                            )
+                            for a in user.accounts
+                        )
+                        if better_exists:
+                            continue
+
                     has_existing = any(
                         h.security and h.security.asset_class_id == ac_id
                         for h in account.holdings
