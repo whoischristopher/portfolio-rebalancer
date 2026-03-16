@@ -38,6 +38,14 @@ from services.portfolio import (
 from services.prices import fetch_prices_from_user_sheet
 from rebalancer import generate_rebalance_transactions
 
+for handler in logging.root.handlers[:]:
+    logging.root.removeHandler(handler)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S',
+)
+
 # ---------------------------------------------------------------------------
 # Flask-Login
 # ---------------------------------------------------------------------------
