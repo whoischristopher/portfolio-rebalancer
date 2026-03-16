@@ -701,14 +701,14 @@ def api_get_holdings():
             'account': account.name,
             'account_type': account.account_type,
             'ticker': h.security.ticker,
-            'name': h.name,
+            'name': h.security.name,   
             'quantity': h.quantity,
             'price': h.price,
-            'currency': h.currency,
+            'currency': h.security.currency,  
             'value': h.market_value,
             'value_base_currency': h.market_value_in_base_currency(exchange_rates),
-            'asset_class': h.asset_class.name,
-            'is_public': h.is_public,
+            'asset_class': h.security.asset_class.name, 
+            'is_public': h.security.is_public,
         }
         for account in accounts
         for h in account.holdings
