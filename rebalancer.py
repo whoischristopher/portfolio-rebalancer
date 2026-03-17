@@ -327,6 +327,8 @@ class RebalancingStrategy:
                 )
                 if txn:
                     actual = self._to_base(txn.amount, txn.currency, user, exchange_rates)
+                    if actual < 500:
+                        continue
                     transactions.append(txn)
                     execution_order += 1
                     remaining[ac_id]        -= actual
@@ -516,11 +518,14 @@ class RebalancingStrategy:
                         user, account, holding, sell_value, execution_order
                     )
                     if txn:
+                        if txn.amount < 500:
+                            continue
                         actual = self._to_base(txn.amount, txn.currency, user, exchange_rates)
                         transactions.append(txn)
                         execution_order += 1
                         account_cash[account.id] = account_cash.get(account.id, 0.0) + txn.amount
                         cash_needed -= actual
+                        remaining_to_buy[ac_id] = max(0, remaining_to_buy.get(ac_id, 0) - actual)
                         log.info(
                             "TARGETED_SELL ac_id=%s account=%s ticker=%s amount=%.2f",
                             ac_id, account.name,
