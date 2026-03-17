@@ -465,6 +465,178 @@ class RebalancingStrategy:
                     account_cash[account.id]  -= actual
         return transactions, execution_order, account_cash
 
+    def _execute_targeted_sells(self, user, underweight, remaining_to_buy, account_cash,
+                                 transactions, execution_order, exchange_rates):
+        """
+        Phase 1.5 ~@~T For constrained asset classes still needing funds, sell overweight
+        holdings *within the same priority account* rather than relying on global sells.
+        This prevents constrained buys (e.g. WSE200 in RRSP) from being starved of cash.
+        """
+        for ac_id, ac_name, _, _ in underweight:
+            if remaining_to_buy.get(ac_id, 0) < 500:
+                continue
+
+            # Find accounts that are the best (lowest) priority for this asset class
+            priority_accounts = []
+            for account in user.accounts:
+                eligible = self._eligible_securities(ac_id, account, user)
+                if not eligible:
+                    continue
+                best_priority = min(e.get("priority", 99) for e in eligible)
+                priority_accounts.append((best_priority, account))
+
+            if not priority_accounts:
+                continue
+
+            # Only act on the highest-priority account(s)
+            min_priority = min(p for p, _ in priority_accounts)
+            if min_priority >= 99:
+                # No explicit priority set ~@~T skip targeted sell, let global phase handle it
+                continue
+
+            for prio, account in sorted(priority_accounts, key=lambda x: x[0]):
+                if prio > min_priority:
+                    break
+                cash_needed = remaining_to_buy[ac_id] - account_cash.get(account.id, 0.0)
+                if cash_needed <= 0:
+                    continue
+
+                # Sell overweight holdings in this account (non-constrained asset classes first)
+                for holding in sorted(account.holdings, key=lambda h: (
+                    h.security.asset_class_id == ac_id if h.security else True,
+                )):
+                    if cash_needed <= 0:
+                        break
+                    if not holding.security or holding.market_value < 500:
+                        continue
+                    if holding.security.asset_class_id == ac_id:
+                        continue  # Don't sell the thing we're trying to buy
+                    sell_value = min(cash_needed, holding.market_value)
+                    txn = self._create_sell_transaction(
+                        user, account, holding, sell_value, execution_order
+                    )
+                    if txn:
+                        actual = self._to_base(txn.amount, txn.currency, user, exchange_rates)
+                        transactions.append(txn)
+                        execution_order += 1
+                        account_cash[account.id] = account_cash.get(account.id, 0.0) + txn.amount
+                        cash_needed -= actual
+                        log.info(
+                            "TARGETED_SELL ac_id=%s account=%s ticker=%s amount=%.2f",
+                            ac_id, account.name,
+                            holding.security.ticker if holding.security else "?",
+                            txn.amount,
+                        )
+
+        return transactions, execution_order, account_cash
+    def _execute_cross_account_swaps(self, user, underweight, account_cash,
+                                      transactions, execution_order, exchange_rates):
+        """
+        Phase 0 — Cross-account swaps.
+        For constrained asset classes where the priority account lacks cash, sell a
+        relocatable holding in that account and re-buy it in another eligible account,
+        freeing cash in the priority account for the constrained buy.
+        """
+        for ac_id, ac_name, needed_amt, _ in underweight:
+            priority_accounts = []
+            for account in user.accounts:
+                eligible = self._eligible_securities(ac_id, account, user)
+                if not eligible:
+                    continue
+                best_priority = min(e.get("priority", 99) for e in eligible)
+                priority_accounts.append((best_priority, account))
+
+            if not priority_accounts:
+                continue
+
+            min_priority = min(p for p, _ in priority_accounts)
+            if min_priority >= 99:
+                continue  # No explicit prioritization — skip
+
+            priority_account_ids = {a.id for _, a in priority_accounts}
+
+            for prio, target_account in sorted(priority_accounts, key=lambda x: x[0]):
+                if prio > min_priority:
+                    break
+                cash_available = account_cash.get(target_account.id, 0.0)
+                if cash_available >= needed_amt * 0.8:
+                    continue  # Close enough — don't churn
+
+                cash_gap = needed_amt - cash_available
+
+                for holding in target_account.holdings:
+                    if cash_gap <= 0:
+                        break
+                    if not holding.security or holding.market_value < 500:
+                        continue
+                    if holding.security.asset_class_id == ac_id:
+                        continue  # Don't relocate the constrained class itself
+
+                    # Find a destination — prefer non-priority accounts to avoid circular chains
+                    destination = None
+                    for other_account in user.accounts:
+                        if other_account.id == target_account.id:
+                            continue
+                        if other_account.id in priority_account_ids:
+                            continue  # Don't swap between priority accounts
+                        if self._eligible_securities(holding.security.asset_class_id, other_account, user):
+                            destination = other_account
+                            break
+                    # Fall back to any eligible account if no non-priority destination found
+                    if not destination:
+                        for other_account in user.accounts:
+                            if other_account.id == target_account.id:
+                                continue
+                            if self._eligible_securities(holding.security.asset_class_id, other_account, user):
+                                destination = other_account
+                                break
+                    if not destination:
+                        continue
+
+                    swap_value = min(cash_gap, holding.market_value)
+                    sell_txn = self._create_sell_transaction(
+                        user, target_account, holding, swap_value, execution_order
+                    )
+                    if not sell_txn:
+                        continue
+
+                    price_base = self._to_base(
+                        holding.price, holding.security.currency, user, exchange_rates
+                    )
+                    buy_qty = int(swap_value / price_base) if price_base > 0 else 0
+                    if buy_qty < 1:
+                        continue
+
+                    buy_txn = RebalanceTransaction(
+                        user_id=user.id,
+                        account_id=destination.id,
+                        security_id=holding.security_id,
+                        action="BUY",
+                        quantity=buy_qty,
+                        price=holding.price,
+                        amount=buy_qty * holding.price,
+                        currency=holding.security.currency,
+                        execution_order=execution_order + 1,
+                        is_final_trade=False,
+                    )
+
+                    actual_sell = self._to_base(sell_txn.amount, sell_txn.currency, user, exchange_rates)
+                    transactions.append(sell_txn)
+                    transactions.append(buy_txn)
+                    execution_order += 2
+                    account_cash[target_account.id] = account_cash.get(target_account.id, 0.0) + sell_txn.amount
+                    account_cash[destination.id] = account_cash.get(destination.id, 0.0) - buy_txn.amount
+                    cash_gap -= actual_sell
+
+                    log.info(
+                        "CROSS_ACCOUNT_SWAP ac_id=%s sell_account=%s buy_account=%s ticker=%s amount=%.2f",
+                        ac_id, target_account.name, destination.name,
+                        holding.security.ticker, sell_txn.amount,
+                    )
+                    break  # Only one swap per account per asset class
+
+        return transactions, execution_order, account_cash
+
     def _assemble_plan(self, user, deltas, overweight, underweight, account_cash,
                        exchange_rates, accounts_sorted, require_existing,
                        cash_phase_accounts=None):
@@ -476,9 +648,9 @@ class RebalancingStrategy:
         original_cash     = copy.deepcopy(account_cash)
 
         # Phase 0: cross-account swaps to fund constrained buys
-        transactions, execution_order, account_cash = self._execute_cross_account_swaps(
-            user, underweight, account_cash, transactions, execution_order, exchange_rates
-        )
+        #transactions, execution_order, account_cash = self._execute_cross_account_swaps(
+        #    user, underweight, account_cash, transactions, execution_order, exchange_rates
+        #)
 
         # Phase 1: deploy idle cash
         ph1_accounts = cash_phase_accounts if cash_phase_accounts is not None else user.accounts
@@ -611,186 +783,6 @@ class HeuristicStrategy(RebalancingStrategy):
                   account.name, ac_id, has_existing, account.is_registered, score)
         return score
 
-    def _execute_targeted_sells(self, user, underweight, remaining_to_buy, account_cash,
-                                 transactions, execution_order, exchange_rates):
-        """
-        Phase 1.5 — For constrained asset classes still needing funds, sell overweight
-        holdings *within the same priority account* rather than relying on global sells.
-        This prevents constrained buys (e.g. WSE200 in RRSP) from being starved of cash.
-        """
-        for ac_id, ac_name, _, _ in underweight:
-            if remaining_to_buy.get(ac_id, 0) < 500:
-                continue
-
-            # Find accounts that are the best (lowest) priority for this asset class
-            priority_accounts = []
-            for account in user.accounts:
-                eligible = self._eligible_securities(ac_id, account, user)
-                if not eligible:
-                    continue
-                best_priority = min(e.get("priority", 99) for e in eligible)
-                priority_accounts.append((best_priority, account))
-
-            if not priority_accounts:
-                continue
-
-            # Only act on the highest-priority account(s)
-            min_priority = min(p for p, _ in priority_accounts)
-            if min_priority >= 99:
-                # No explicit priority set — skip targeted sell, let global phase handle it
-                continue
-
-            for prio, account in sorted(priority_accounts, key=lambda x: x[0]):
-                if prio > min_priority:
-                    break
-                cash_needed = remaining_to_buy[ac_id] - account_cash.get(account.id, 0.0)
-                if cash_needed <= 0:
-                    continue
-
-                # Sell overweight holdings in this account (non-constrained asset classes first)
-                for holding in sorted(account.holdings, key=lambda h: (
-                    h.security.asset_class_id == ac_id if h.security else True,
-                )):
-                    if cash_needed <= 0:
-                        break
-                    if not holding.security or holding.market_value < 500:
-                        continue
-                    if holding.security.asset_class_id == ac_id:
-                        continue  # Don't sell the thing we're trying to buy
-                    sell_value = min(cash_needed, holding.market_value)
-                    txn = self._create_sell_transaction(
-                        user, account, holding, sell_value, execution_order
-                    )
-                    if txn:
-                        actual = self._to_base(txn.amount, txn.currency, user, exchange_rates)
-                        transactions.append(txn)
-                        execution_order += 1
-                        account_cash[account.id] = account_cash.get(account.id, 0.0) + txn.amount
-                        cash_needed -= actual
-                        log.info(
-                            "TARGETED_SELL ac_id=%s account=%s ticker=%s amount=%.2f",
-                            ac_id, account.name,
-                            holding.security.ticker if holding.security else "?",
-                            txn.amount,
-                        )
-
-        return transactions, execution_order, account_cash
-
-    def _execute_cross_account_swaps(self, user, underweight, account_cash,
-                                      transactions, execution_order, exchange_rates):
-        """
-        Phase 0 — Cross-account swaps.
-        For constrained asset classes (e.g. WSE200 must go in RRSP), if the priority
-        account lacks cash but holds a relocatable security, sell it there and buy it
-        in another eligible account, freeing cash for the constrained buy.
-        """
-        for ac_id, ac_name, needed_amt, _ in underweight:
-            # Find priority accounts for this asset class
-            priority_accounts = []
-            for account in user.accounts:
-                eligible = self._eligible_securities(ac_id, account, user)
-                if not eligible:
-                    continue
-                best_priority = min(e.get("priority", 99) for e in eligible)
-                priority_accounts.append((best_priority, account))
-
-            if not priority_accounts:
-                continue
-
-            min_priority = min(p for p, _ in priority_accounts)
-            if min_priority >= 99:
-                continue  # No explicit prioritization — skip
-
-            for prio, target_account in sorted(priority_accounts, key=lambda x: x[0]):
-                if prio > min_priority:
-                    break
-                cash_available = account_cash.get(target_account.id, 0.0)
-                if cash_available >= needed_amt:
-                    continue  # Already has enough cash
-
-                cash_gap = needed_amt - cash_available
-
-                # Find holdings in this account that can be relocated elsewhere
-                for holding in target_account.holdings:
-                    if cash_gap <= 0:
-                        break
-                    if not holding.security or holding.market_value < 500:
-                        continue
-                    if holding.security.asset_class_id == ac_id:
-                        continue  # Don't relocate the constrained class itself
-
-                    relocate_sec_id = holding.security_id
-
-                    # Find another account that can hold this security
-                    destination = None
-                    for _, other_account in sorted(priority_accounts, key=lambda x: x[0]):
-                        if other_account.id == target_account.id:
-                            continue
-                        other_eligible = self._eligible_securities(
-                            holding.security.asset_class_id, other_account, user
-                        )
-                        if other_eligible:
-                            destination = other_account
-                            break
-                    # Also check non-priority accounts as destinations
-                    if not destination:
-                        for other_account in user.accounts:
-                            if other_account.id == target_account.id:
-                                continue
-                            other_eligible = self._eligible_securities(
-                                holding.security.asset_class_id, other_account, user
-                            )
-                            if other_eligible:
-                                destination = other_account
-                                break
-
-                    if not destination:
-                        continue
-
-                    swap_value = min(cash_gap, holding.market_value)
-
-                    # SELL in priority account
-                    sell_txn = self._create_sell_transaction(
-                        user, target_account, holding, swap_value, execution_order
-                    )
-                    if not sell_txn:
-                        continue
-
-                    # BUY same security in destination account
-                    price_base = self._to_base(holding.price, holding.security.currency, user, exchange_rates)
-                    buy_qty = int(swap_value / price_base) if price_base > 0 else 0
-                    if buy_qty < 1:
-                        continue
-
-                    buy_txn = RebalanceTransaction(
-                        user_id=user.id,
-                        account_id=destination.id,
-                        security_id=relocate_sec_id,
-                        action="BUY",
-                        quantity=buy_qty,
-                        price=holding.price,
-                        amount=buy_qty * holding.price,
-                        currency=holding.security.currency,
-                        execution_order=execution_order + 1,
-                        is_final_trade=False,
-                    )
-
-                    actual_sell = self._to_base(sell_txn.amount, sell_txn.currency, user, exchange_rates)
-                    transactions.append(sell_txn)
-                    transactions.append(buy_txn)
-                    execution_order += 2
-                    account_cash[target_account.id] = account_cash.get(target_account.id, 0.0) + sell_txn.amount
-                    account_cash[destination.id] = account_cash.get(destination.id, 0.0) - buy_txn.amount
-                    cash_gap -= actual_sell
-
-                    log.info(
-                        "CROSS_ACCOUNT_SWAP ac_id=%s sell_account=%s buy_account=%s ticker=%s amount=%.2f",
-                        ac_id, target_account.name, destination.name,
-                        holding.security.ticker, sell_txn.amount,
-                    )
-
-        return transactions, execution_order, account_cash
-
     def generate(self, user, deltas, overweight, underweight, account_cash, exchange_rates):
         transactions    = []
         execution_order = 1
@@ -800,9 +792,9 @@ class HeuristicStrategy(RebalancingStrategy):
         original_cash     = copy.deepcopy(account_cash)
 
         # Phase 0: cross-account swaps
-        transactions, execution_order, account_cash = self._execute_cross_account_swaps(
-            user, underweight, account_cash, transactions, execution_order, exchange_rates
-        )
+        #transactions, execution_order, account_cash = self._execute_cross_account_swaps(
+        #    user, underweight, account_cash, transactions, execution_order, exchange_rates
+        #)
 
         # Pre-sort underweight by constraint score: most constrained asset classes first.
         # This ensures scarce securities (e.g. WSE200, WSE300) get scheduled before
