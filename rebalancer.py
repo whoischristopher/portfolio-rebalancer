@@ -448,10 +448,12 @@ class RebalancingStrategy:
 
         # Phase 2b: apply sell limiting HERE, before Phase 3
         transactions = self._apply_sell_limiting(transactions, original_cash, user, exchange_rates)
+
+        # Reset all account cash to original before accumulating sell amounts
+        account_cash = {k: v for k, v in original_cash.items()}
+
         # Recompute account_cash to reflect limited sell amounts
         for txn in transactions:
-            # Reset all account cash to original before accumulating sell amounts
-            account_cash = {k: v for k, v in original_cash.items()}
             if txn.action == "SELL":
                 account_cash[txn.account_id] += txn.amount
 
