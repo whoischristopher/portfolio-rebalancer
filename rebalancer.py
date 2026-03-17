@@ -108,7 +108,7 @@ class RebalancingStrategy:
         if not eligible:
             return None
         if prefer_existing:
-            eligible.sort(key=lambda x: (not x["existing"], x["security"].id))
+            eligible.sort(key=lambda x: (x.get("priority", 99), not x["existing"], x["security"].id))
         if len(eligible) > 1:
             return RebalanceTransaction(
                 user_id=user.id,
@@ -315,6 +315,7 @@ class RebalancingStrategy:
                 cash = account_cash.get(account.id, 0.0)
                 if cash < 500:
                     continue
+                has_existing = False 
                 if require_existing:
                     has_existing = any(
                         h.security and h.security.asset_class_id == ac_id
@@ -443,8 +444,10 @@ class RebalancingStrategy:
         transactions = self._apply_sell_limiting(transactions, original_cash, user, exchange_rates)
         # Recompute account_cash to reflect limited sell amounts
         for txn in transactions:
+            # Reset all account cash to original before accumulating sell amounts
+            account_cash = {k: v for k, v in original_cash.items()}
             if txn.action == "SELL":
-                account_cash[txn.account_id] = original_cash.get(txn.account_id, 0.0) + txn.amount
+                account_cash[txn.account_id] += txn.amount
 
         # Phase 3: buys funded by sell proceeds
         transactions, execution_order, account_cash = self._execute_buys(
@@ -554,8 +557,9 @@ class HeuristicStrategy(RebalancingStrategy):
                     if not self._eligible_securities(ac_id, account, user):
                         continue
 
-                    eligible_here = self._eligible_securities(ac_id, account, user)
-                    my_priority = min(e.get("priority", 99) for e in eligible_here)
+                    eligible = self._eligible_securities(ac_id, account, user)
+                    my_priority = min(e.get("priority", 99) for e in eligible)
+
                     if my_priority > 1:
                         best_possible_priority = min(
                             (
