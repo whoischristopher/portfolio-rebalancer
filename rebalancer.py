@@ -344,30 +344,36 @@ class RebalancingStrategy:
                     if my_priority > best_possible_priority:
                         continue
 
-                # Skip the "stay where it lives" guard when an explicit priority preference exists
-                has_explicit_priority_pref = any(
-                    p.restriction_type == "prioritized_accounts"
-                    for p in SecurityPreference.query.filter_by(user_id=user.id).all()
-                    if Security.query.get(p.security_id) is not None
-                    and Security.query.get(p.security_id).asset_class_id == ac_id
-                )
-                if not has_explicit_priority_pref:
-                    portfolio_has_class = db.session.query(
-                        db.session.query(Holding).join(Security).join(Account)
-                        .filter(Account.user_id == user.id)
-                        .filter(Security.asset_class_id == ac_id)
-                        .exists()
-                    ).scalar()
-                    if portfolio_has_class and not has_existing:
-                        account_has_class = db.session.query(
-                            db.session.query(Holding)
-                            .filter(Holding.account_id == account.id)
-                            .join(Security)
+                    # Skip the "stay where it lives" guard when an explicit priority preference exists
+                    has_explicit_priority_pref = any(
+                        p.restriction_type == "prioritized_accounts"
+                        for p in SecurityPreference.query.filter_by(user_id=user.id).all()
+                        if Security.query.get(p.security_id) is not None
+                        and Security.query.get(p.security_id).asset_class_id == ac_id
+                    )
+                    if has_explicit_priority_pref:
+                        # When a prioritized_accounts preference exists, only allow accounts
+                        # that are explicitly listed (priority 1, 2, or 3). Unlisted accounts
+                        # (priority 99) must not receive buys for this asset class.
+                        if my_priority >= 99:
+                            continue
+                    else:
+                        portfolio_has_class = db.session.query(
+                            db.session.query(Holding).join(Security).join(Account)
+                            .filter(Account.user_id == user.id)
                             .filter(Security.asset_class_id == ac_id)
                             .exists()
                         ).scalar()
-                        if not account_has_class:
-                            continue
+                        if portfolio_has_class and not has_existing:
+                            account_has_class = db.session.query(
+                                db.session.query(Holding)
+                                .filter(Holding.account_id == account.id)
+                                .join(Security)
+                                .filter(Security.asset_class_id == ac_id)
+                                .exists()
+                            ).scalar()
+                            if not account_has_class:
+                                continue
 
                 amount_to_buy = min(remaining_to_buy[ac_id], cash)
 
@@ -587,7 +593,13 @@ class HeuristicStrategy(RebalancingStrategy):
                         if Security.query.get(p.security_id) is not None
                         and Security.query.get(p.security_id).asset_class_id == ac_id
                     )
-                    if not has_explicit_priority_pref:
+                    if has_explicit_priority_pref:
+                        # When a prioritized_accounts preference exists, only allow accounts
+                        # that are explicitly listed (priority 1, 2, or 3). Unlisted accounts
+                        # (priority 99) must not receive buys for this asset class.
+                        if my_priority >= 99:
+                            continue
+                    else:
                         portfolio_has_class = db.session.query(
                             db.session.query(Holding).join(Security).join(Account)
                             .filter(Account.user_id == user.id)
