@@ -58,6 +58,23 @@ class RebalancingStrategy:
     def _from_base(self, amount, to_currency, user, exchange_rates):
         return convert_to_base(amount, user.base_currency, to_currency, exchange_rates)
 
+    def _compute_constraint_score(self, user, ac_id):
+        """
+        Returns a constraint score for an asset class.
+        Lower = more constrained = should be scheduled first.
+        Counts unique eligible securities across all accounts × number of eligible accounts.
+        """
+        all_securities = set()
+        eligible_account_count = 0
+        for account in user.accounts:
+            eligible = self._eligible_securities(ac_id, account, user)
+            if eligible:
+                eligible_account_count += 1
+                for e in eligible:
+                    all_securities.add(e["security"].id)
+        return len(all_securities) * 10 + eligible_account_count
+
+
     def _eligible_securities(self, asset_class_id, account, user):
         securities = Security.query.filter_by(asset_class_id=asset_class_id).all()
         prefs = {p.security_id: p for p in SecurityPreference.query.filter_by(user_id=user.id).all()}
@@ -575,6 +592,10 @@ class HeuristicStrategy(RebalancingStrategy):
         score += 200 if has_existing else -100
         score += 50  if account.is_registered else 0
         score += min(cash, 10_000) / 100
+        if has_existing and account.is_registered:
+            score += 150
+        log.info("SCORE account=%s ac_id=%s has_existing=%s is_registered=%s score=%.1f",
+                  account.name, ac_id, has_existing, account.is_registered, score)
         return score
 
     def generate(self, user, deltas, overweight, underweight, account_cash, exchange_rates):
@@ -584,6 +605,19 @@ class HeuristicStrategy(RebalancingStrategy):
         remaining_to_sell = {ac_id: abs(amt) for ac_id, _, amt, _ in overweight}
         account_cash      = copy.deepcopy(account_cash)
         original_cash     = copy.deepcopy(account_cash)
+
+        # Pre-sort underweight by constraint score: most constrained asset classes first.
+        # This ensures scarce securities (e.g. WSE200, WSE300) get scheduled before
+        # flexible ones (e.g. US Equity with ITOT/XUU/DI-U).
+        underweight = sorted(
+            underweight,
+            key=lambda x: self._compute_constraint_score(user, x[0])
+        )
+        log.info(
+            "CONSTRAINT_ORDER %s",
+            [(ac_name, self._compute_constraint_score(user, ac_id))
+             for ac_id, ac_name, _, _ in underweight]
+        )
 
         # Phase 1: greedy cash deployment
         for _ in range(len(underweight) * len(user.accounts)):
