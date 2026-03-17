@@ -265,6 +265,37 @@ class RebalancingStrategy:
                 if self.name in ("Minimize-Positions", "Cash-Efficient"):
                     if not any(h.security and h.security.asset_class_id == ac_id for h in account.holdings):
                         continue
+
+                eligible = self._eligible_securities(ac_id, account, user)
+                if not eligible:
+                    continue
+                my_priority = min(e.get("priority", 99) for e in eligible)
+                if my_priority > 1:
+                    best_possible_priority = min(
+                        (
+                            min(
+                                (e.get("priority", 99) for e in self._eligible_securities(ac_id, a, user)),
+                                default=99
+                            )
+                            for a in user.accounts
+                            if a.id != account.id and self._eligible_securities(ac_id, a, user)
+                        ),
+                        default=99,
+                    )
+                    if my_priority > best_possible_priority:
+                        log.info("PRIORITY_SKIP precision_tune account=%s ac_id=%s", account.name, ac_id)
+                        continue
+                has_explicit_priority_pref = any(
+                    p.restriction_type == "prioritized_accounts"
+                    for p in SecurityPreference.query.filter_by(user_id=user.id).all()
+                    if Security.query.get(p.security_id) is not None
+                    and Security.query.get(p.security_id).asset_class_id == ac_id
+                )
+                if has_explicit_priority_pref:
+                    if my_priority >= 99:
+                        log.info("PRIORITY_SKIP precision_tune (explicit pref) account=%s ac_id=%s", account.name, ac_id)
+                        continue
+
                 amount_to_buy = min(cash, remaining[ac_id])
 
                 overweight_ids = {d["asset_class_id"] for d in deltas if d["percentage_diff"] > 0}
