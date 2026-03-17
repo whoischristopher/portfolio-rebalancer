@@ -328,6 +328,7 @@ class RebalancingStrategy:
                     continue
 
                 my_priority = min(e.get("priority", 99) for e in eligible)
+                log.info("PRIORITY_CHECK _execute_buys account=%s ac_id=%s my_priority=%s require_existing=%s", account.name, ac_id, my_priority, require_existing)
                 if my_priority > 1:
                     best_possible_priority = min(
                         (
@@ -341,7 +342,9 @@ class RebalancingStrategy:
                         ),
                         default=99,
                     )
+                    log.info("PRIORITY_CHECK _execute_buys account=%s ac_id=%s best_possible=%s", account.name, ac_id, best_possible_priority)
                     if my_priority > best_possible_priority:
+                        log.info("PRIORITY_SKIP account=%s ac_id=%s", account.name, ac_id)
                         continue
 
                     # Skip the "stay where it lives" guard when an explicit priority preference exists
@@ -567,6 +570,7 @@ class HeuristicStrategy(RebalancingStrategy):
 
                     eligible = self._eligible_securities(ac_id, account, user)
                     my_priority = min(e.get("priority", 99) for e in eligible)
+                    log.info("PRIORITY_CHECK _execute_buys account=%s ac_id=%s my_priority=%s require_existing=%s", account.name, ac_id, my_priority, require_existing)
 
                     if my_priority > 1:
                         best_possible_priority = min(
@@ -581,7 +585,9 @@ class HeuristicStrategy(RebalancingStrategy):
                             ),
                             default=99,
                         )
+                        log.info("PRIORITY_CHECK _execute_buys account=%s ac_id=%s best_possible=%s", account.name, ac_id, best_possible_priority)
                         if my_priority > best_possible_priority:
+                            log.info("PRIORITY_SKIP account=%s ac_id=%s", account.name, ac_id)
                             continue
 
                     has_existing = any(
