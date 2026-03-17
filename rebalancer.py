@@ -620,22 +620,25 @@ class HeuristicStrategy(RebalancingStrategy):
         )
 
         # Phase 1: greedy cash deployment
-        for _ in range(len(underweight) * len(user.accounts)):
-            best_score  = -999
-            best_choice = None
-            for account in user.accounts:
-                cash = account_cash.get(account.id, 0.0)
-                if cash < 100:
-                    continue
-                for ac_id, _, _, pct_diff in underweight:
-                    if remaining_to_buy.get(ac_id, 0) < 1:
-                        continue
-                    if not self._eligible_securities(ac_id, account, user):
+        # Process underweight asset classes in constraint order (most constrained first).
+        # For each asset class, fully exhaust available cash before moving to the next.
+        for ac_id, _, _, pct_diff in underweight:
+            while remaining_to_buy.get(ac_id, 0) >= 500:
+                best_score = -999
+                best_choice = None
+
+                for account in user.accounts:
+                    cash = account_cash.get(account.id, 0.0)
+                    if cash < 500:
                         continue
 
                     eligible = self._eligible_securities(ac_id, account, user)
+                    if not eligible:
+                        continue
+
                     my_priority = min(e.get("priority", 99) for e in eligible)
-                    log.info("PRIORITY_CHECK heuristic_phase1 account=%s ac_id=%s my_priority=%s", account.name, ac_id, my_priority)
+                    log.info("PRIORITY_CHECK heuristic_phase1 account=%s ac_id=%s my_priority=%s",
+                             account.name, ac_id, my_priority)
 
                     if my_priority > 1:
                         best_possible_priority = min(
@@ -645,21 +648,22 @@ class HeuristicStrategy(RebalancingStrategy):
                                     default=99
                                 )
                                 for a in user.accounts
-                                if a.id != account.id
-                                and self._eligible_securities(ac_id, a, user)  
+                                if a.id != account.id and self._eligible_securities(ac_id, a, user)
                             ),
                             default=99,
                         )
-                        log.info("PRIORITY_CHECK _execute_buys account=%s ac_id=%s best_possible=%s", account.name, ac_id, best_possible_priority)
+                        log.info("PRIORITY_CHECK _execute_buys account=%s ac_id=%s best_possible=%s",
+                                 account.name, ac_id, best_possible_priority)
                         if my_priority > best_possible_priority:
-                            log.info("PRIORITY_SKIP heuristic_phase1 account=%s ac_id=%s", account.name, ac_id)
+                            log.info("PRIORITY_SKIP heuristic_phase1 account=%s ac_id=%s",
+                                     account.name, ac_id)
                             continue
 
                     has_existing = any(
                         h.security and h.security.asset_class_id == ac_id
                         for h in account.holdings
                     )
-                    # Skip the "stay where it lives" guard when an explicit priority preference exists
+
                     has_explicit_priority_pref = any(
                         p.restriction_type == "prioritized_accounts"
                         for p in SecurityPreference.query.filter_by(user_id=user.id).all()
@@ -667,9 +671,6 @@ class HeuristicStrategy(RebalancingStrategy):
                         and Security.query.get(p.security_id).asset_class_id == ac_id
                     )
                     if has_explicit_priority_pref:
-                        # When a prioritized_accounts preference exists, only allow accounts
-                        # that are explicitly listed (priority 1, 2, or 3). Unlisted accounts
-                        # (priority 99) must not receive buys for this asset class.
                         if my_priority >= 99:
                             continue
                     else:
@@ -691,46 +692,46 @@ class HeuristicStrategy(RebalancingStrategy):
                                 continue
 
                     sc = self._score(account, ac_id, cash, pct_diff, has_existing)
-
                     if sc > best_score:
-                        best_score  = sc
+                        best_score = sc
                         best_choice = (account, ac_id, min(cash, remaining_to_buy[ac_id]))
 
-            if not best_choice:
-                break
-            account, ac_id, amount_to_buy = best_choice
-            if amount_to_buy < 500:   # skip tiny buys
-                break
+                if not best_choice:
+                    break
 
-            # Top up existing BUY if one already exists for this asset class in this account
-            existing_buy = next(
-                (t for t in transactions
-                 if t.action == "BUY"
-                 and t.account_id == account.id
-                 and t.security_id is not None
-                 and Security.query.get(t.security_id) is not None
-                 and Security.query.get(t.security_id).asset_class_id == ac_id),
-                None
-            )
-            if existing_buy and existing_buy.price and existing_buy.price > 0:
-                extra_qty = int(amount_to_buy / existing_buy.price)
-                if extra_qty > 0:
-                    actual = extra_qty * existing_buy.price
-                    existing_buy.quantity += extra_qty
-                    existing_buy.amount   += actual
-                    remaining_to_buy[ac_id]   -= actual
-                    account_cash[account.id]  -= actual
-            else:
-                txn = self._create_buy_transaction(
-                    user, account, ac_id, amount_to_buy, execution_order,
-                    exchange_rates=exchange_rates,
+                account, ac_id, amount_to_buy = best_choice
+                if amount_to_buy < 500:
+                    break
+
+                existing_buy = next(
+                    (t for t in transactions
+                     if t.action == "BUY" and t.account_id == account.id
+                     and t.security_id is not None
+                     and Security.query.get(t.security_id) is not None
+                     and Security.query.get(t.security_id).asset_class_id == ac_id),
+                    None
                 )
-                if txn:
-                    actual = self._to_base(txn.amount, txn.currency, user, exchange_rates)
-                    transactions.append(txn)
-                    execution_order += 1
-                    remaining_to_buy[ac_id]   -= actual
-                    account_cash[account.id]  -= actual
+                if existing_buy and existing_buy.price and existing_buy.price > 0:
+                    extra_qty = int(amount_to_buy / existing_buy.price)
+                    if extra_qty > 0:
+                        actual = extra_qty * existing_buy.price
+                        existing_buy.quantity += extra_qty
+                        existing_buy.amount += actual
+                        remaining_to_buy[ac_id] -= actual
+                        account_cash[account.id] -= actual
+                else:
+                    txn = self._create_buy_transaction(
+                        user, account, ac_id, amount_to_buy, execution_order,
+                        exchange_rates=exchange_rates,
+                    )
+                    if txn:
+                        actual = self._to_base(txn.amount, txn.currency, user, exchange_rates)
+                        transactions.append(txn)
+                        execution_order += 1
+                        remaining_to_buy[ac_id] -= actual
+                        account_cash[account.id] -= actual
+                    else:
+                        break  # _create_buy_transaction returned None, no point retrying
 
         # Phase 2: sells (registered first)
         accounts_sorted = sorted(user.accounts, key=lambda a: (not a.is_registered, a.name))
