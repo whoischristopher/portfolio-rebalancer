@@ -354,8 +354,11 @@ class RebalancingStrategy:
                             continue
                         transactions.append(txn)
                         execution_order += 1
-                        account_cash[account.id] += txn.amount
-                        remaining_to_sell[ac_id] -= txn.amount
+                    actual_base = self._to_base(txn.amount, txn.currency, user, exchange_rates)
+                    transactions.append(txn)
+                    execution_order += 1
+                    account_cash[account.id] += actual_base
+                    remaining_to_sell[ac_id] -= actual_base
         return transactions, execution_order, account_cash
 
     def _execute_buys(self, user, accounts_sorted, underweight, remaining_to_buy,
@@ -367,20 +370,20 @@ class RebalancingStrategy:
                 cash = account_cash.get(account.id, 0.0)
                 if cash < 500:
                     continue
-                has_existing = False 
-                if require_existing:
-                    has_existing = any(
-                        h.security and h.security.asset_class_id == ac_id
-                        for h in account.holdings
-                    )
-                    if not has_existing:
-                        continue
+
+                has_existing = any(
+                    h.security and h.security.asset_class_id == ac_id
+                    for h in account.holdings
+                )
+                if require_existing and not has_existing:
+                    continue
+
                 eligible = self._eligible_securities(ac_id, account, user)
                 if not eligible:
                     continue
-
                 my_priority = min(e.get("priority", 99) for e in eligible)
                 log.info("PRIORITY_CHECK _execute_buys account=%s ac_id=%s my_priority=%s require_existing=%s", account.name, ac_id, my_priority, require_existing)
+
                 if my_priority > 1:
                     best_possible_priority = min(
                         (
@@ -399,47 +402,43 @@ class RebalancingStrategy:
                         log.info("PRIORITY_SKIP account=%s ac_id=%s", account.name, ac_id)
                         continue
 
-                    # Skip the "stay where it lives" guard when an explicit priority preference exists
-                    has_explicit_priority_pref = any(
-                        p.restriction_type == "prioritized_accounts"
-                        for p in SecurityPreference.query.filter_by(user_id=user.id).all()
-                        if Security.query.get(p.security_id) is not None
-                        and Security.query.get(p.security_id).asset_class_id == ac_id
-                    )
-                    if has_explicit_priority_pref:
-                        # When a prioritized_accounts preference exists, only allow accounts
-                        # that are explicitly listed (priority 1, 2, or 3). Unlisted accounts
-                        # (priority 99) must not receive buys for this asset class.
-                        if my_priority >= 99:
-                            continue
-                    else:
-                        portfolio_has_class = db.session.query(
-                            db.session.query(Holding).join(Security).join(Account)
-                            .filter(Account.user_id == user.id)
+                has_explicit_priority_pref = any(
+                    p.restriction_type == "prioritized_accounts"
+                    for p in SecurityPreference.query.filter_by(user_id=user.id).all()
+                    if Security.query.get(p.security_id) is not None
+                    and Security.query.get(p.security_id).asset_class_id == ac_id
+                )
+                if has_explicit_priority_pref:
+                    if my_priority >= 99:
+                        continue
+                else:
+                    portfolio_has_class = db.session.query(
+                        db.session.query(Holding).join(Security).join(Account)
+                        .filter(Account.user_id == user.id)
+                        .filter(Security.asset_class_id == ac_id)
+                        .exists()
+                    ).scalar()
+                    if portfolio_has_class and not has_existing:
+                        account_has_class = db.session.query(
+                            db.session.query(Holding)
+                            .filter(Holding.account_id == account.id)
+                            .join(Security)
                             .filter(Security.asset_class_id == ac_id)
                             .exists()
                         ).scalar()
-                        if portfolio_has_class and not has_existing:
-                            account_has_class = db.session.query(
-                                db.session.query(Holding)
-                                .filter(Holding.account_id == account.id)
-                                .join(Security)
-                                .filter(Security.asset_class_id == ac_id)
-                                .exists()
-                            ).scalar()
-                            if not account_has_class:
-                                continue
-
+                        if not account_has_class:
+                            continue
+    
                 amount_to_buy = min(remaining_to_buy[ac_id], cash)
-
+    
                 # Top up existing pending BUY for same asset class in same account
                 existing_buy = next(
                     (t for t in transactions
-                     if t.action == "BUY"
-                     and t.account_id == account.id
-                     and t.security_id is not None
-                     and Security.query.get(t.security_id) is not None
-                     and Security.query.get(t.security_id).asset_class_id == ac_id),
+                    if t.action == "BUY"
+                    and t.account_id == account.id
+                    and t.security_id is not None
+                    and Security.query.get(t.security_id) is not None
+                    and Security.query.get(t.security_id).asset_class_id == ac_id),
                     None
                 )
                 if existing_buy and existing_buy.price and existing_buy.price > 0:
@@ -520,12 +519,12 @@ class RebalancingStrategy:
                     if txn:
                         if txn.amount < 500:
                             continue
-                        actual = self._to_base(txn.amount, txn.currency, user, exchange_rates)
+                        actual_base = self._to_base(txn.amount, txn.currency, user, exchange_rates)
                         transactions.append(txn)
                         execution_order += 1
-                        account_cash[account.id] = account_cash.get(account.id, 0.0) + txn.amount
-                        cash_needed -= actual
-                        remaining_to_buy[ac_id] = max(0, remaining_to_buy.get(ac_id, 0) - actual)
+                        account_cash[account.id] = account_cash.get(account.id, 0.0) + actual_base  # use base currency
+                        cash_needed -= actual_base
+                        remaining_to_buy[ac_id] = max(0, remaining_to_buy.get(ac_id, 0) - actual_base)
                         log.info(
                             "TARGETED_SELL ac_id=%s account=%s ticker=%s amount=%.2f",
                             ac_id, account.name,
