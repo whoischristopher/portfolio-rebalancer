@@ -694,7 +694,7 @@ class RebalancingStrategy:
         for txn in transactions:
             if txn.action == "SELL":
                 actual_base = self._to_base(txn.amount, txn.currency, user, exchange_rates)
-                account_cash[account.id] += actual_base
+                account_cash[txn.account.id] += actual_base
 
         # Phase 3: buys funded by sell proceeds
         transactions, execution_order, account_cash = self._execute_buys(
