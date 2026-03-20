@@ -337,7 +337,7 @@ class RebalancingStrategy:
         return transactions, execution_order
 
     def _execute_sells(self, user, accounts_sorted, overweight, remaining_to_sell,
-                       account_cash, transactions, execution_order):
+                       account_cash, transactions, execution_order, exchange_rates):
         for account in accounts_sorted:
             for ac_id, _, _, _ in overweight:
                 if remaining_to_sell.get(ac_id, 0) < 1:
@@ -354,11 +354,9 @@ class RebalancingStrategy:
                             continue
                         transactions.append(txn)
                         execution_order += 1
-                    actual_base = self._to_base(txn.amount, txn.currency, user, exchange_rates)
-                    transactions.append(txn)
-                    execution_order += 1
-                    account_cash[account.id] += actual_base
-                    remaining_to_sell[ac_id] -= actual_base
+                        actual_base = self._to_base(txn.amount, txn.currency, user, exchange_rates)
+                        account_cash[account.id] += actual_base
+                        remaining_to_sell[ac_id] -= actual_base
         return transactions, execution_order, account_cash
 
     def _execute_buys(self, user, accounts_sorted, underweight, remaining_to_buy,
@@ -683,7 +681,7 @@ class RebalancingStrategy:
         sell_accounts = [a for a in accounts_sorted if not require_existing or account_can_buy(a)]
         transactions, execution_order, account_cash = self._execute_sells(
             user, sell_accounts, overweight, remaining_to_sell, account_cash,
-            transactions, execution_order,
+            transactions, execution_order, exchange_rates
         )
 
         # Phase 2b: apply sell limiting HERE, before Phase 3
@@ -695,7 +693,8 @@ class RebalancingStrategy:
         # Recompute account_cash to reflect limited sell amounts
         for txn in transactions:
             if txn.action == "SELL":
-                account_cash[txn.account_id] += txn.amount
+                actual_base = self._to_base(txn.amount, txn.currency, user, exchange_rates)
+                account_cash[account.id] += actual_base
 
         # Phase 3: buys funded by sell proceeds
         transactions, execution_order, account_cash = self._execute_buys(
@@ -937,7 +936,7 @@ class HeuristicStrategy(RebalancingStrategy):
         accounts_sorted = sorted(user.accounts, key=lambda a: (not a.is_registered, a.name))
         transactions, execution_order, account_cash = self._execute_sells(
             user, accounts_sorted, overweight, remaining_to_sell, account_cash,
-            transactions, execution_order,
+            transactions, execution_order, exchange_rates
         )
 
         # Phase 3: buys after sells
