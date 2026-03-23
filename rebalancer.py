@@ -522,7 +522,7 @@ class RebalancingStrategy:
                         execution_order += 1
                         account_cash[account.id] = account_cash.get(account.id, 0.0) + actual_base  # use base currency
                         cash_needed -= actual_base
-                        remaining_to_buy[ac_id] = max(0, remaining_to_buy.get(ac_id, 0) - actual_base)
+                        # remaining_to_buy is decremented by _execute_buys when the actual buy occurs
                         log.info(
                             "TARGETED_SELL ac_id=%s account=%s ticker=%s amount=%.2f",
                             ac_id, account.name,
@@ -694,7 +694,7 @@ class RebalancingStrategy:
         for txn in transactions:
             if txn.action == "SELL":
                 actual_base = self._to_base(txn.amount, txn.currency, user, exchange_rates)
-                account_cash[txn.account.id] += actual_base
+                account_cash[txn.account_id] += actual_base
 
         # Phase 3: buys funded by sell proceeds
         transactions, execution_order, account_cash = self._execute_buys(
