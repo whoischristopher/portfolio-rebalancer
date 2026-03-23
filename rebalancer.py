@@ -416,7 +416,7 @@ class RebalancingStrategy:
                         .filter(Security.asset_class_id == ac_id)
                         .exists()
                     ).scalar()
-                    if portfolio_has_class and not has_existing:
+                    if require_existing and portfolio_has_class and not has_existing:
                         account_has_class = db.session.query(
                             db.session.query(Holding)
                             .filter(Holding.account_id == account.id)
@@ -493,10 +493,11 @@ class RebalancingStrategy:
                 # No explicit priority set ~@~T skip targeted sell, let global phase handle it
                 continue
 
+            total_freed = 0
             for prio, account in sorted(priority_accounts, key=lambda x: x[0]):
                 if prio > min_priority:
                     break
-                cash_needed = remaining_to_buy[ac_id] - account_cash.get(account.id, 0.0)
+                cash_needed = max(0, remaining_to_buy[ac_id] - total_freed) - account_cash.get(account.id, 0.0)
                 if cash_needed <= 0:
                     continue
 
@@ -522,6 +523,7 @@ class RebalancingStrategy:
                         execution_order += 1
                         account_cash[account.id] = account_cash.get(account.id, 0.0) + actual_base  # use base currency
                         cash_needed -= actual_base
+                        total_freed += actual_base
                         # remaining_to_buy is decremented by _execute_buys when the actual buy occurs
                         log.info(
                             "TARGETED_SELL ac_id=%s account=%s ticker=%s amount=%.2f",
@@ -873,7 +875,7 @@ class HeuristicStrategy(RebalancingStrategy):
                             .filter(Security.asset_class_id == ac_id)
                             .exists()
                         ).scalar()
-                        if portfolio_has_class and not has_existing:
+                        if False:  # heuristic: allow any account when no explicit pref
                             account_has_class = db.session.query(
                                 db.session.query(Holding)
                                 .filter(Holding.account_id == account.id)
