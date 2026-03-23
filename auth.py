@@ -36,6 +36,10 @@ def login():
     scheme = 'https' if os.getenv('FLASK_ENV') == 'production' else None
     redirect_uri = url_for('auth.callback', _external=True, _scheme=scheme)
 
+    # Use the registered Authlib client to start the flow
+    google = oauth.create_client('google')  # or just oauth.google if you prefer
+    return google.authorize_redirect(redirect_uri)
+
 @auth_bp.route('/callback')
 def callback():
     '''Handle OAuth callback from Google'''

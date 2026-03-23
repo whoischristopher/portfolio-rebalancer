@@ -469,6 +469,24 @@ def rebalance():
     transactions = RebalanceTransaction.query.filter_by(
         user_id=current_user.id, executed=False
     ).order_by(RebalanceTransaction.execution_order).all()
+
+    # Group by account and calculate totals
+    from collections import defaultdict
+    grouped = defaultdict(lambda: {'account': None, 'sells': [], 'buys': [], 'total_buy': 0, 'total_sell': 0})
+
+    for txn in transactions:
+        acc_name = txn.account.name
+        grouped[acc_name]['account'] = txn.account
+        if txn.action == 'SELL':
+            grouped[acc_name]['sells'].append(txn)
+            grouped[acc_name]['total_sell'] += txn.amount
+        else:
+            grouped[acc_name]['buys'].append(txn)
+            grouped[acc_name]['total_buy'] += txn.amount
+
+    # Sort by total buy amount descending
+    sorted_groups = sorted(grouped.items(), key=lambda x: x[1]['total_buy'], reverse=True)
+
     exchange_rates = get_exchange_rates(current_user)
     allocation_by_id, allocation_pct_by_id, total_portfolio = calculate_portfolio_allocation(
         current_user, exchange_rates
