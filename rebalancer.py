@@ -1050,7 +1050,7 @@ def generate_rebalance_transactions(user) -> list:
             txn.quantity,
             txn.price,
             txn.amount,
-            txn.security.ticker if txn.security else "N/A",
+            txn.security.ticker if txn.security else (f"USER_SELECT:{len(txn.available_securities or [])}" if txn.requires_user_selection else "N/A"),
         )
     log.info("Chosen plan strategy=%s, num_txns=%d",
              best_plan.metadata.get("strategy"), len(best_plan))
