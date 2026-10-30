@@ -80,8 +80,9 @@ class Holding(db.Model):
 
     quantity = db.Column(db.Float, nullable=False)
     price = db.Column(db.Float, nullable=False)
-    # Adjusted cost base: TOTAL for the position, in the user's BASE currency (CAD),
-    # i.e. converted at the FX rate when bought – that is what CRA cares about.
+    # Book value (adjusted cost base): TOTAL for the position, in the SECURITY's
+    # currency (same as price). Gains are estimated by converting at spot, so for
+    # USD holdings the FX component of the gain is approximate.
     # Only matters for non-registered accounts; NULL = unknown (treated as all gain).
     book_value = db.Column(db.Float, nullable=True)
     notes = db.Column(db.Text)
@@ -211,7 +212,7 @@ class Security(db.Model):
     currency = db.Column(db.String(3), default='CAD')
     is_public = db.Column(db.Boolean, default=True)
     auto_update_price = db.Column(db.Boolean, default=True)
-    last_price = db.Column(db.Float, nullable=True)   # security currency; lets the optimiser buy unheld securities
+    last_price = db.Column(db.Float, nullable=True)   # THE price (security currency); holdings mirror it
 
     # Relationship links
     asset_class = db.relationship('AssetClass', back_populates='securities')

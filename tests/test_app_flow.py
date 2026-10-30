@@ -127,3 +127,33 @@ def test_rebalance_flow():
         u = User.query.get(uid); assert (u.trade_cost, u.taxable_sell_mode, u.balanced_threshold) == (4.95, "never", 1.0)
     c.post("/rebalance/generate")
     p = plan(); assert p["taxable_sells"] == 0 and "offer" not in p and p["mode"] == "never"
+
+    # --- prices: one price per security, new holdings inherit it, sheet update propagates
+    import app as appmod
+    c.post("/holdings/add", data={"account_id": acc_ids["TFSA"], "security_id": ids["VAB"], "quantity": "10"})
+    with app.app_context():
+        h = Holding.query.filter_by(account_id=acc_ids["TFSA"], security_id=ids["VAB"]).first()
+        assert h.price == 23.0, "new holding must take the security's price, not 0"
+    appmod.fetch_prices_from_user_sheet = lambda user: {"TSE:XIC": 41.5, "NYSEARCA:ITOT": 131.0, "TSE:VAB": 23.4}
+    c.post("/update_prices")
+    with app.app_context():
+        assert Security.query.get(ids["XIC"]).last_price == 41.5
+        assert all(h.price == 41.5 for h in Holding.query.filter_by(security_id=ids["XIC"]))
+        assert Holding.query.filter_by(security_id=ids["VAB"]).first().price == 23.4
+        assert all(h.price == 131.0 for h in Holding.query.filter_by(security_id=ids["ITOT"]))
+    assert c.get("/securities").status_code == 200
+    assert c.get(f"/securities/{ids['XIC']}/edit").status_code == 200
+
+    # --- book value in SECURITY currency: a USD buy adds the USD amount to ACB
+    with app.app_context():
+        itot = Holding.query.filter_by(account_id=acc_ids["RRSP"], security_id=ids["ITOT"]).first()
+        itot.book_value = 30000.0          # USD
+        Account.query.get(acc_ids["RRSP"]).cash_balance = 2000.0
+        t = RebalanceTransaction(user_id=uid, account_id=acc_ids["RRSP"], security_id=ids["ITOT"], action="BUY",
+                                 quantity=10, price=131.0, amount=1310.0, currency="USD", execution_order=99)
+        db.session.add(t); db.session.commit(); tid = t.id
+    c.post(f"/rebalance/execute/{tid}")
+    with app.app_context():
+        itot = Holding.query.filter_by(account_id=acc_ids["RRSP"], security_id=ids["ITOT"]).first()
+        assert abs(itot.book_value - 31310.0) < 0.01, itot.book_value                              # stays USD
+        assert abs(Account.query.get(acc_ids["RRSP"]).cash_balance - (2000 - 1310 * 1.38)) < 0.05  # CAD cash at spot

@@ -36,7 +36,9 @@ from services.portfolio import (
     calculate_portfolio_allocation,
     calculate_asset_class_deltas,
 )
-from services.prices import fetch_prices_from_user_sheet
+from services.prices import (
+    PriceSheetError, fetch_prices_from_user_sheet, match_prices_to_securities, set_security_price,
+)
 from rebalancer import generate_plan
 from services.fx import convert_to_base
 
@@ -197,16 +199,22 @@ def add_holding():
         return redirect(url_for('holdings'))
     security = Security.query.get_or_404(security_id)
     book_value = request.form.get('book_value')
+    if price:
+        set_security_price(security, float(price))     # a typed price becomes the security's price
     holding = Holding(
         account_id=account_id,
         security_id=security_id,
         quantity=float(quantity),
-        price=float(price) if price else 0.0,
+        price=security.last_price or 0.0,
         book_value=float(book_value) if book_value else None,
     )
     db.session.add(holding)
     db.session.commit()
-    flash(f'Holding {security.ticker} added successfully', 'success')
+    if security.last_price:
+        flash(f'Holding {security.ticker} added successfully', 'success')
+    else:
+        flash(f'Holding {security.ticker} added, but it has no price yet – run "Update Prices" '
+              f'or set a price on the security.', 'warning')
     return redirect(url_for('holdings'))
 
 
@@ -220,8 +228,12 @@ def edit_holding(holding_id):
     if request.method == 'POST':
         holding.account_id = request.form.get('account_id')
         holding.quantity = float(request.form.get('quantity', 0))
-        holding.price = float(request.form.get('price', 0))
-        holding.security_id = request.form.get('security_id')
+        holding.security_id = int(request.form.get('security_id'))
+        new_price = float(request.form.get('price') or 0)
+        sec = Security.query.get(holding.security_id)
+        if new_price > 0 and new_price != sec.last_price:
+            set_security_price(sec, new_price)           # one price per security
+        holding.price = sec.last_price or new_price
         holding.notes = request.form.get('notes')
         book_value = request.form.get('book_value', '').strip()
         holding.book_value = float(book_value) if book_value else None
@@ -256,36 +268,21 @@ def delete_holding(holding_id):
 def update_prices():
     try:
         prices = fetch_prices_from_user_sheet(current_user)
-        if not prices:
-            flash('No prices fetched from Google Sheet.', 'warning')
-            return redirect(url_for('holdings'))
-        all_holdings = (
-            Holding.query
-            .join(Account)
-            .join(Security)
-            .filter(
-                Account.user_id == current_user.id,
-                Security.is_public == True,
-                Security.auto_update_price == True,
-            )
-            .all()
-        )
-        updated = 0
-        for h in all_holdings:
-            price = prices.get(h.security.ticker)
-            if price is not None:
-                h.price = float(price)
-                h.updated_at = datetime.utcnow()
-                updated += 1
-        # Also remember the price on the security itself, so the rebalancer can
-        # buy securities that aren't held anywhere yet.
-        for sec in Security.query.filter(Security.ticker.in_(list(prices.keys()))).all():
-            sec.last_price = float(prices[sec.ticker])
-        db.session.commit()
-        flash(f'Successfully updated {updated} security prices!', 'success')
-    except Exception as exc:
-        log.exception('Error updating prices')
-        flash(f'Error updating prices: {exc}', 'danger')
+    except PriceSheetError as exc:
+        flash(f'Price update failed: {exc}', 'error')
+        return redirect(url_for('holdings'))
+    candidates = Security.query.filter(Security.auto_update_price.is_(True)).all()
+    matched, unmatched = match_prices_to_securities(prices, candidates)
+    by_id = {s.id: s for s in candidates}
+    for sec_id, price in matched.items():
+        set_security_price(by_id[sec_id], price)
+    db.session.commit()
+    flash(f'Updated prices for {len(matched)} securities.', 'success')
+    missing = sorted(s.ticker for s in candidates if s.id not in matched)
+    if missing:
+        flash('No price in the sheet for: ' + ', '.join(missing), 'warning')
+    if unmatched:
+        flash('Sheet tickers not matching any security: ' + ', '.join(sorted(unmatched)[:15]), 'warning')
     return redirect(url_for('holdings'))
 
 
@@ -390,6 +387,7 @@ def add_security():
                 currency=request.form.get('currency', 'CAD'),
                 is_public=request.form.get('is_public') == 'on',
                 auto_update_price=request.form.get('auto_update_price') == 'on',
+                last_price=float(request.form['price']) if request.form.get('price') else None,
             ))
             db.session.commit()
             flash(f'Security {ticker} added.', 'success')
@@ -411,6 +409,8 @@ def edit_security(security_id):
         security.currency = request.form.get('currency', 'CAD')
         security.is_public = request.form.get('is_public') == 'on'
         security.auto_update_price = request.form.get('auto_update_price') == 'on'
+        if request.form.get('price'):
+            set_security_price(security, float(request.form['price']))
         db.session.commit()
         flash(f'Security {security.ticker} updated successfully.', 'success')
         return redirect(url_for('securities'))
@@ -620,9 +620,9 @@ def execute_rebalance_transaction(transaction_id):
         base = current_user.base_currency or 'CAD'
         acct_ccy = account.currency or base
         sec_ccy = txn.currency or (txn.security.currency if txn.security else acct_ccy)
-        # Trade amount in the account's cash currency and in base (ACB) currency, at spot.
+        # Trade amount in the account's cash currency, at spot. Book value is kept in
+        # the security's own currency; realised gains are reported in base currency.
         amount_acct = convert_to_base(txn.amount, sec_ccy, acct_ccy, fx)
-        amount_base = convert_to_base(txn.amount, sec_ccy, base, fx)
         if txn.action == 'SELL':
             if not holding or holding.quantity < txn.quantity - 1e-9:
                 raise ValueError(
@@ -634,7 +634,7 @@ def execute_rebalance_transaction(transaction_id):
                 acb_sold = holding.book_value * (txn.quantity / holding.quantity)
                 holding.book_value -= acb_sold
                 if not account.is_registered:
-                    txn.realized_gain = amount_base - acb_sold
+                    txn.realized_gain = convert_to_base(txn.amount - acb_sold, sec_ccy, base, fx)
             holding.quantity -= txn.quantity
             if holding.quantity <= 1e-9:
                 db.session.delete(holding)
@@ -648,14 +648,14 @@ def execute_rebalance_transaction(transaction_id):
             if holding:
                 holding.quantity += txn.quantity
                 if holding.book_value is not None:
-                    holding.book_value += amount_base
+                    holding.book_value += txn.amount
             else:
                 db.session.add(Holding(
                     account_id=txn.account_id,
                     security_id=txn.security_id,
                     quantity=txn.quantity,
                     price=txn.price,
-                    book_value=amount_base,
+                    book_value=txn.amount,
                 ))
             account.cash_balance = (account.cash_balance or 0) - amount_acct
         txn.executed = True
@@ -847,10 +847,30 @@ def _migrate_columns():
                 log.info('Migrated: added %s.%s', table, column)
 
 
+def _backfill_prices():
+    """One price per security: fill Security.last_price from holdings where missing,
+    then repair holdings stuck at price 0."""
+    changed = False
+    for sec in Security.query.filter(Security.last_price.is_(None)).all():
+        h = (Holding.query.filter(Holding.security_id == sec.id, Holding.price > 0)
+             .order_by(Holding.updated_at.desc()).first())
+        if h:
+            sec.last_price = h.price
+            changed = True
+    for h in Holding.query.filter((Holding.price.is_(None)) | (Holding.price <= 0)).all():
+        if h.security and h.security.last_price:
+            h.price = h.security.last_price
+            changed = True
+    if changed:
+        db.session.commit()
+        log.info('Backfilled security prices.')
+
+
 def _init_db():
     with app.app_context():
         db.create_all()
         _migrate_columns()
+        _backfill_prices()
         log.info('Database schema ensured.')
 
 

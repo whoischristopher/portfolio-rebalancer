@@ -40,10 +40,10 @@
       </div>
       <div class="form-group">
         <label for="price">Price (optional)</label>
-        <input type="number" step="0.01" id="price" name="price" placeholder="Auto-fetch">
+        <input type="number" step="0.0001" id="price" name="price" placeholder="Uses the security's price">
       </div>
       <div class="form-group">
-        <label for="book_value">Book Value / ACB ({{ base_currency }}, optional)</label>
+        <label for="book_value">Book Value / ACB (security currency, optional)</label>
         <input type="number" step="0.01" id="book_value" name="book_value" placeholder="Total cost, non-registered only">
       </div>
     </div>
@@ -89,7 +89,7 @@
         <th class="text-right">Price</th>
         <th class="text-right">Market Value</th>
         <th class="text-right">Value ({{ base_currency }})</th>
-        <th class="text-right" title="Total adjusted cost base in {{ base_currency }} – used to estimate capital gains in non-registered accounts">Book Value</th>
+        <th class="text-right" title="Total adjusted cost base, in the security's currency – used to estimate capital gains in non-registered accounts">Book Value</th>
         <th>Notes</th>
         <th>Last Updated</th>
         <th>Actions</th>
@@ -120,7 +120,7 @@
         </td>
         <td class="text-right">
           {% if holding.book_value is not none %}
-            {{ base_currency }} ${{ "{:,.2f}".format(holding.book_value) }}
+            {{ holding.currency }} ${{ "{:,.2f}".format(holding.book_value) }}
           {% elif not holding.account.is_registered %}
             <span style="color: #e67e22;" title="Missing – the rebalancer will assume the whole sale is gain">missing</span>
           {% else %}
