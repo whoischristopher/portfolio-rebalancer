@@ -27,3 +27,17 @@ def test_match_prefers_exact_then_normalised():
         {"TSE:XEC": 30.0, "NYSEARCA:ITOT": 130.0, "DLR.U": 10.0, "TSE:DLR": 13.8, "ZZZ": 1.0}, secs)
     assert matched == {1: 30.0, 2: 130.0, 3: 10.0, 4: 13.8}
     assert unmatched == ["ZZZ"]
+
+
+def test_google_error_messages_are_specific():
+    from services.prices import _explain_google_error
+
+    class HttpError(Exception):
+        def __init__(self, status, reason):
+            super().__init__(reason); self.resp = NS(status=status); self.reason = reason
+
+    assert "tick the box" in _explain_google_error(HttpError(403, "Request had insufficient authentication scopes."))
+    assert "Sheets API isn't enabled" in _explain_google_error(
+        HttpError(403, "Google Sheets API has not been used in project 123 before or it is disabled."))
+    assert "account that can open it" in _explain_google_error(HttpError(403, "The caller does not have permission"))
+    assert "Sheet ID" in _explain_google_error(HttpError(404, "Requested entity was not found."))
