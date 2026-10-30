@@ -93,8 +93,11 @@ def callback():
 @auth_bp.route('/logout')
 def logout():
     '''Log out current user'''
-    logout_user()
+    # Order matters: logout_user() flags the remember-me cookie for deletion in the
+    # session; clearing the session afterwards would erase that flag and the cookie
+    # would silently log the user straight back in.
     session.clear()
+    logout_user()
     flash('You have been logged out successfully.', 'info')
     return redirect(url_for('index'))
 

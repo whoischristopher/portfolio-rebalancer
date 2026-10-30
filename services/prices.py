@@ -75,14 +75,7 @@ def fetch_prices_from_user_sheet(user) -> dict:
         ).execute()
     except Exception as exc:
         log.exception("Price sheet read failed for user %s", user.id)
-        msg = str(exc)
-        if "invalid_grant" in msg or "401" in msg:
-            msg = "Google sign-in expired or was revoked – log out and log in again."
-        elif "404" in msg:
-            msg = "Sheet not found – check the Sheet ID in Settings."
-        elif "403" in msg:
-            msg = "No permission to read the sheet – log in with the Google account that owns it."
-        raise PriceSheetError(msg) from exc
+        raise PriceSheetError(_explain_google_error(exc)) from exc
 
     prices = {}
     for row in result.get("values", []):
@@ -98,6 +91,30 @@ def fetch_prices_from_user_sheet(user) -> dict:
         raise PriceSheetError("The sheet was read but no usable prices were found in columns A–B "
                               "(check for #N/A or text in column B).")
     return prices
+
+
+def _explain_google_error(exc) -> str:
+    """Turn a Google API failure into an actionable message, keeping Google's own reason."""
+    status = getattr(getattr(exc, "resp", None), "status", None) or getattr(exc, "status_code", None)
+    reason = (getattr(exc, "reason", None) or str(exc)).strip()
+    low = reason.lower() + " " + str(exc).lower()
+    if "invalid_grant" in low or status == 401:
+        hint = "Google sign-in expired or was revoked – log out and log in again."
+    elif "insufficient authentication scopes" in low or "insufficientpermissions" in low:
+        hint = ("Your sign-in didn't grant access to Google Sheets. Log out, log in again, and on Google's "
+                "consent screen tick the box allowing the app to see your spreadsheets.")
+    elif "has not been used in project" in low or "is disabled" in low or "service_disabled" in low \
+            or "accessnotconfigured" in low:
+        hint = ("The Google Sheets API isn't enabled in your Google Cloud project – enable it under "
+                "APIs & Services → Library → Google Sheets API, wait a minute, then retry.")
+    elif status == 404 or "not found" in low:
+        hint = "Sheet not found – check the Sheet ID in Settings."
+    elif status == 403:
+        hint = ("Google refused access to the sheet – make sure you're logged in with a Google account "
+                "that can open it.")
+    else:
+        hint = "Couldn't read the price sheet."
+    return f"{hint} (Google said: {reason[:200]})"
 
 
 def match_prices_to_securities(prices: dict, securities) -> tuple[dict, list]:
