@@ -18,6 +18,7 @@
                 <th>Name</th>
                 <th>Asset Class</th>
                 <th>Currency</th>
+                <th class="text-right">Price</th>
                 <th>Restrictions</th>
                 <th>Actions</th>
             </tr>
@@ -29,6 +30,7 @@
                 <td>{{ s.name }}</td>
                 <td>{{ s.asset_class.name if s.asset_class else '-' }}</td>
                 <td>{{ s.currency }}</td>
+                <td class="text-right">{% if s.last_price %}${{ "{:,.2f}".format(s.last_price) }}{% else %}<span style="color:#e67e22">none</span>{% endif %}</td>
                 <td style="font-size: 0.85rem;">
                     {% set pref = preferences.get(s.id) %}
                     {% if pref %}

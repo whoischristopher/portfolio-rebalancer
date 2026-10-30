@@ -67,7 +67,7 @@ def build_problem(user, exchange_rates, allow_taxable_sells: bool) -> tuple[Prob
     targets = Target.query.filter_by(user_id=user.id).all()
     class_ids = {t.asset_class_id for t in targets}
 
-    # Price per security: the user's own holding price first, else Security.last_price.
+    # One price per security (Security.last_price); a held copy is the fallback.
     holding_price = {}
     for acc in accounts:
         for h in acc.holdings:
@@ -77,7 +77,7 @@ def build_problem(user, exchange_rates, allow_taxable_sells: bool) -> tuple[Prob
     sec_in, securities = [], []
     unpriced = []
     for sec in Security.query.filter(Security.asset_class_id.in_(class_ids)).all() if class_ids else []:
-        native = holding_price.get(sec.id) or sec.last_price
+        native = sec.last_price or holding_price.get(sec.id)
         if not native or native <= 0:
             unpriced.append(sec.ticker)
             continue
@@ -99,9 +99,11 @@ def build_problem(user, exchange_rates, allow_taxable_sells: bool) -> tuple[Prob
     pos_in = []
     for acc in accounts:
         for h in acc.holdings:
+            # Book value is stored in the security's currency; the optimiser works in base.
+            bv = None if h.book_value is None else convert_to_base(
+                h.book_value, h.security.currency, base, exchange_rates)
             pos_in.append(PositionIn(
-                account_id=acc.id, security_id=h.security_id, quantity=h.quantity,
-                book_value=h.book_value,   # already base currency
+                account_id=acc.id, security_id=h.security_id, quantity=h.quantity, book_value=bv,
             ))
 
     since = datetime.utcnow() - timedelta(days=SUPERFICIAL_LOSS_DAYS)

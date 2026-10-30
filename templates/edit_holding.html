@@ -33,16 +33,16 @@
   </div>
 
   <div class="form-group">
-    <label for="price">Price</label>
-    <input type="number" step="0.01" id="price" name="price" value="{{ holding.price }}" class="form-control">
+    <label for="price">Price <small style="color:#7f8c8d">(changes it for every holding of this security)</small></label>
+    <input type="number" step="0.0001" id="price" name="price" value="{{ holding.price }}" class="form-control">
   </div>
 
   <div class="form-group">
-    <label for="book_value">Book Value / ACB (total, base currency)</label>
+    <label for="book_value">Book Value / ACB (total, in {{ holding.security.currency }})</label>
     <input type="number" step="0.01" id="book_value" name="book_value"
            value="{{ '%.2f'|format(holding.book_value) if holding.book_value is not none else '' }}" class="form-control"
            placeholder="Leave blank if unknown">
-    <small style="color: #7f8c8d;">Needed for non-registered accounts so the rebalancer can estimate capital gains. For USD holdings, use the cost in CAD at the exchange rate when bought.</small>
+    <small style="color: #7f8c8d;">Needed for non-registered accounts so the rebalancer can estimate capital gains. Same currency as the price – e.g. USD for a USD-listed ETF.</small>
   </div>
 
   <div class="form-group">

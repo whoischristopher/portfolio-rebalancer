@@ -62,8 +62,9 @@
                    value="{{ user.price_sheet_id or '' }}" 
                    placeholder="e.g., 1aBcDeFgHiJkLmNoPqRsTuVwXyZ123456789">
             <small style="display: block; margin-top: 0.5rem; color: #7f8c8d;">
-                Create a Google Sheet with tickers in column A (e.g., XEC.TO) and 
-                <code>=GOOGLEFINANCE(A2,"price")</code> formulas in column B. 
+                Create a Google Sheet with tickers in column A (e.g., <code>TSE:XEC</code> or <code>NYSEARCA:ITOT</code>; the
+                exchange prefix is ignored when matching your securities) and
+                <code>=GOOGLEFINANCE(A2,"price")</code> formulas in column B. The first tab is read. 
                 Then paste the Sheet ID from the URL here: 
                 <code>docs.google.com/spreadsheets/d/<strong>YOUR_SHEET_ID</strong>/edit</code>
             </small>

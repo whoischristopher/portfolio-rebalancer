@@ -1,49 +1,128 @@
 """
-services/prices.py – External price fetching helpers.
+services/prices.py – Price handling.
+
+A security has ONE price: Security.last_price (in the security's currency).
+Holding.price is kept as a synced copy for the rest of the app; always change
+prices through set_security_price() so the two never diverge.
 """
 import json
 import logging
 import os
-from google.oauth2.credentials import Credentials
-from googleapiclient.discovery import build
+import re
 
 log = logging.getLogger(__name__)
 
+# Exchange suffixes (Yahoo style) we ignore when matching sheet tickers to securities.
+# ".U" is deliberately NOT here: on the TSX it marks a separate USD-traded listing.
+_SUFFIXES = (".TO", ".V", ".NE", ".CN", ".TSX")
+
+
+class PriceSheetError(Exception):
+    """Raised with a user-readable reason when the price sheet can't be read."""
+
+
+def normalize_ticker(ticker: str) -> str:
+    """'TSE:XEC' / 'XEC.TO' / ' xec ' → 'XEC'.  'NYSEARCA:ITOT' → 'ITOT'."""
+    t = (ticker or "").strip().upper()
+    if ":" in t:
+        t = t.split(":", 1)[1]
+    for sfx in _SUFFIXES:
+        if t.endswith(sfx):
+            t = t[: -len(sfx)]
+            break
+    return t
+
+
+def _to_float(value):
+    if isinstance(value, (int, float)):
+        return float(value)
+    cleaned = re.sub(r"[^0-9.\-]", "", str(value))   # drops $, CA$, US$, commas, spaces
+    return float(cleaned) if cleaned not in ("", "-", ".") else None
+
 
 def fetch_prices_from_user_sheet(user) -> dict:
-    """
-    Read ticker→price pairs from the user's Google Sheet.
+    """Read ticker→price from the user's Google Sheet (column A ticker, column B price).
 
-    Expects column A = ticker symbol, column B = price (e.g. a GOOGLEFINANCE formula).
-    Returns {} on any error so callers can decide how to handle missing prices.
+    Reads the first sheet tab, UNFORMATTED values (so "$45.12" or "1,234.50"
+    formatting can't break parsing).  Raises PriceSheetError on failure.
     """
-    if not user.google_token or not user.price_sheet_id:
-        return {}
+    if not user.price_sheet_id:
+        raise PriceSheetError("No price sheet ID set – add it in Settings.")
+    if not user.google_token:
+        raise PriceSheetError("No Google sign-in token stored – log out and log in again.")
+
+    from google.oauth2.credentials import Credentials
+    from googleapiclient.discovery import build
+
     try:
-        token_dict = json.loads(user.google_token)
+        token = json.loads(user.google_token)
         creds = Credentials(
-            token=token_dict["access_token"],
-            refresh_token=token_dict.get("refresh_token"),
+            token=token["access_token"],
+            refresh_token=token.get("refresh_token"),
             token_uri="https://oauth2.googleapis.com/token",
             client_id=os.getenv("GOOGLE_CLIENT_ID"),
             client_secret=os.getenv("GOOGLE_CLIENT_SECRET"),
             scopes=["https://www.googleapis.com/auth/spreadsheets.readonly"],
         )
-        service = build("sheets", "v4", credentials=creds)
-        result = (
-            service.spreadsheets().values()
-            .get(spreadsheetId=user.price_sheet_id, range="Sheet1!A1:B")
-            .execute()
-        )
-        prices = {}
-        for row in result.get("values", []):
-            if len(row) >= 2 and row[0]:
-                try:
-                    prices[row[0]] = float(row[1])
-                except (ValueError, TypeError):
-                    pass
-        return prices
+        service = build("sheets", "v4", credentials=creds, cache_discovery=False)
+        meta = service.spreadsheets().get(spreadsheetId=user.price_sheet_id,
+                                          fields="sheets.properties.title").execute()
+        first_tab = meta["sheets"][0]["properties"]["title"]
+        result = service.spreadsheets().values().get(
+            spreadsheetId=user.price_sheet_id,
+            range=f"'{first_tab}'!A1:B",
+            valueRenderOption="UNFORMATTED_VALUE",
+        ).execute()
     except Exception as exc:
-        log.error("Error reading price sheet for user %s: %s", user.id, exc)
-        return {}
+        log.exception("Price sheet read failed for user %s", user.id)
+        msg = str(exc)
+        if "invalid_grant" in msg or "401" in msg:
+            msg = "Google sign-in expired or was revoked – log out and log in again."
+        elif "404" in msg:
+            msg = "Sheet not found – check the Sheet ID in Settings."
+        elif "403" in msg:
+            msg = "No permission to read the sheet – log in with the Google account that owns it."
+        raise PriceSheetError(msg) from exc
 
+    prices = {}
+    for row in result.get("values", []):
+        if len(row) < 2 or not str(row[0]).strip():
+            continue
+        try:
+            price = _to_float(row[1])
+        except ValueError:
+            price = None            # "#N/A", "Loading..." etc.
+        if price and price > 0:
+            prices[str(row[0]).strip()] = price
+    if not prices:
+        raise PriceSheetError("The sheet was read but no usable prices were found in columns A–B "
+                              "(check for #N/A or text in column B).")
+    return prices
+
+
+def match_prices_to_securities(prices: dict, securities) -> tuple[dict, list]:
+    """Return ({security_id: price}, [unmatched sheet tickers]).  Exact ticker match wins,
+    otherwise match on the normalised ticker (exchange prefix/suffix ignored)."""
+    exact = {s.ticker.strip().upper(): s for s in securities if s.ticker}
+    norm = {}
+    for s in securities:
+        if s.ticker:
+            norm.setdefault(normalize_ticker(s.ticker), []).append(s)
+    matched, unmatched = {}, []
+    for raw, price in prices.items():
+        sec = exact.get(raw.strip().upper())
+        candidates = [sec] if sec else norm.get(normalize_ticker(raw), [])
+        if len(candidates) == 1:
+            matched[candidates[0].id] = price
+        else:
+            unmatched.append(raw)
+    return matched, unmatched
+
+
+def set_security_price(security, price: float):
+    """Single place to change a price: updates the security and every holding of it."""
+    from datetime import datetime
+    from models import Holding
+    security.last_price = float(price)
+    Holding.query.filter_by(security_id=security.id).update(
+        {"price": float(price), "updated_at": datetime.utcnow()}, synchronize_session="fetch")
