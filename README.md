@@ -11,33 +11,34 @@ Key features:
 - Asset Allocation targets
 - Rebalance against the targets
 
-✅ What the Algorithm Does:
-- Portfolio-Level Rebalancing: Identifies overweight and underweight asset classes across your entire portfolio
-- Account-Matched Trading: Sells and buys happen in the same account to avoid contribution limit issues
-- Existing Position Preference: Prefers adding to existing holdings over creating new positions in an account
-- Balanced Threshold: Only rebalances asset classes that deviate more than 0.50% from target (configurable in Settings)
-- Security Restrictions: Respects per-security account restrictions (configured on Securities page)
-- Fractional Shares: Final trade per account uses fractional shares to minimize leftover cash
+How the rebalancer works:
+The plan is produced by an optimiser (mixed-integer program, solved with HiGHS via scipy) that
+weighs all possible trades at once instead of applying rules one after another.
+Logic: services/optimizer.py (pure, unit-tested). Database adapter: rebalancer.py.
 
-🎯 How It Chooses What to Buy:
-- Find Best Account: Prioritizes accounts with existing holdings AND sellable overweight positions
-- Generate Sells First: Sells overweight positions in that account to generate cash
-- Generate Buys: Uses the generated cash to buy underweight positions
-- Prefer Existing Securities: Adds to positions you already own when possible
+It minimises, in order of weight:
+- Drift outside the balanced band (Settings) – drift inside the band is nearly free, so it doesn't chase exact targets
+- Capital gains realised in non-registered accounts (from each holding's book value / ACB; losses aren't penalised)
+- Number of trades (+ the per-trade cost from Settings)
+- Number of positions – discourages new positions and closes small scattered positions when cheap
+- Buying in lower-priority accounts (Securities page priorities are preferences; restrictions are hard rules)
+- Idle cash
 
-🔄 Transaction Sequencing:
-- Account Grouping: All sells and buys for an account are grouped together
-- Sell First: Sells execute first to generate cash
-- Buy Second: Buys execute using the generated cash
-- No Cross-Account Transfers: Each account is self-contained
+Always respected:
+- Each account funds its own buys; no account's cash goes negative; FX at spot rate
+- Non-registered sells: Never / Ask / Allow (Settings). "Ask" plans without them and, if something is still
+  outside its band, offers the alternative with the gain it would realise
+- Superficial loss rule: no loss sale + repurchase of the same security in one plan, no buy within 30 days of a
+  recorded loss sale, no loss sale within 30 days of a recorded buy (only trades executed in this app are known)
+- Optional fractional final buy per account to use up leftover cash, without pushing a class past its band
 
-⚠️ What the Algorithm Does NOT Do (Yet):
-- Cross-Account Cash Transfers: Doesn't move money between accounts (respects contribution limits)
-- Tax-Loss Harvesting: Doesn't identify losing positions to offset gains
-- Wash Sale Awareness: Doesn't avoid repurchasing securities sold at a loss within 30 days
-- Cost Basis Tracking: Doesn't track purchase prices or holding periods for capital gains
-- Long-term vs Short-term Gains: Doesn't consider holding periods for preferential tax treatment
-- Specific Lot Selection: Doesn't let you choose which shares to sell (FIFO, LIFO, etc.)
+Book value tracking: enter ACB (total, in base currency) for non-registered holdings on the Holdings page;
+executing trades in the app updates it (average cost) and records realised gains.
+
+Not (yet) handled: tax-loss harvesting, asset location beyond security priorities, cross-account transfers,
+trades placed outside the app for the 30-day superficial loss window.
+
+Tests: `python -m pytest tests/ -q`
 
 Installation:
 - Clone/pull the code

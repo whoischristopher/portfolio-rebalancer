@@ -14,9 +14,12 @@ class User(UserMixin, db.Model):
     base_currency = db.Column(db.String(3), default='CAD')
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     last_login = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-    trading_costs_enabled = db.Column(db.Boolean, default=False)
+    trading_costs_enabled = db.Column(db.Boolean, default=False)   # legacy, unused by the optimiser
     balanced_threshold = db.Column(db.Float, default=0.5)
-    precision_rebalancing = db.Column(db.Boolean, default=True)
+    precision_rebalancing = db.Column(db.Boolean, default=True)   # = fractional final buy per account
+    trade_cost = db.Column(db.Float, default=0.0)                 # per trade, in base currency
+    taxable_sell_mode = db.Column(db.String(10), default='ask')   # 'never' | 'ask' | 'allow'
+    last_plan_summary = db.Column(db.Text)                        # JSON from rebalancer.generate_plan
 
     # OAuth token storage
     google_token = db.Column(db.Text)  # JSON string of the token dict
@@ -77,6 +80,10 @@ class Holding(db.Model):
 
     quantity = db.Column(db.Float, nullable=False)
     price = db.Column(db.Float, nullable=False)
+    # Adjusted cost base: TOTAL for the position, in the user's BASE currency (CAD),
+    # i.e. converted at the FX rate when bought – that is what CRA cares about.
+    # Only matters for non-registered accounts; NULL = unknown (treated as all gain).
+    book_value = db.Column(db.Float, nullable=True)
     notes = db.Column(db.Text)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -166,6 +173,8 @@ class RebalanceTransaction(db.Model):
     requires_user_selection = db.Column(db.Boolean, default=False)  # Multiple securities available
     available_securities = db.Column(db.JSON, nullable=True)  # List of security IDs if user needs to choose
     
+    realized_gain = db.Column(db.Float, nullable=True)  # SELLs in taxable accounts, base currency
+
     execution_order = db.Column(db.Integer)  # Sequence number
     executed = db.Column(db.Boolean, default=False)
     executed_at = db.Column(db.DateTime)
@@ -202,6 +211,7 @@ class Security(db.Model):
     currency = db.Column(db.String(3), default='CAD')
     is_public = db.Column(db.Boolean, default=True)
     auto_update_price = db.Column(db.Boolean, default=True)
+    last_price = db.Column(db.Float, nullable=True)   # security currency; lets the optimiser buy unheld securities
 
     # Relationship links
     asset_class = db.relationship('AssetClass', back_populates='securities')
