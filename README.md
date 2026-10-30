@@ -24,6 +24,10 @@ It minimises, in order of weight:
 - Buying in lower-priority accounts (Securities page priorities are preferences; restrictions are hard rules)
 - Idle cash
 
+Two stages: first the cheapest plan that brings every class inside its band (portfolios already within
+their bands get no trades). Then, if any trades are needed, the same number of trades with no extra
+realised gain is re-sized to land as close to target as possible – the furthest-off classes first.
+
 Always respected:
 - Each account funds its own buys; no account's cash goes negative; FX at spot rate
 - Non-registered sells: Never / Ask / Allow (Settings). "Ask" plans without them and, if something is still

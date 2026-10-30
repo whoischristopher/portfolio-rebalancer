@@ -237,3 +237,33 @@ def test_usd_buy_in_cad_account_flags_conversion():
     pos = [PositionIn(RRSP, XIC, 1000), PositionIn(RRSP, ITOT, 10)]
     res = solve(problem(accts, pos, {CA: 60, US: 40}))
     assert any("convert" in n and "USD" in n for n in res.notes)
+
+
+# --------------------------------------------------------------------------- #
+# Stage 2: aim for target (user's real allocation, Oct 2026)
+# --------------------------------------------------------------------------- #
+def user_portfolio(**kw):
+    vals = {1: (2143848, 36), 2: (1316316, 22), 3: (1053793, 18), 4: (501756, 9),
+            5: (315384, 5), 6: (242867, 4), 7: (236277, 4), 8: (117934, 2)}
+    secs = [SecurityIn(100 + k, f"S{k}", k, 50.0, 50.0, "CAD") for k in vals]
+    accts = [AccountIn(1, "RRSP", False, 0.0)]
+    pos = [PositionIn(1, 100 + k, v / 50.0) for k, (v, _) in vals.items()]
+    return Problem(accounts=accts, securities=secs, positions=pos,
+                   targets={k: t for k, (_, t) in vals.items()}, class_names={k: f"C{k}" for k in vals},
+                   buy_levels={(1, 100 + k): 0 for k in vals}, **kw)
+
+
+def test_aims_for_target_with_same_trade_count():
+    edge = solve(user_portfolio(aim_for_target=False))
+    aimed = solve(user_portfolio(aim_for_target=True))
+    assert not edge.out_of_band and not aimed.out_of_band
+    assert len(aimed.trades) <= len(edge.trades)
+    assert abs(aimed.drift_after[4]) < abs(edge.drift_after[4])     # EM closer to 9%
+    assert abs(aimed.drift_after[4]) < 0.15
+
+
+def test_inside_band_still_means_no_trades():
+    p = user_portfolio()
+    p.positions = [PositionIn(1, 104, (501756 + 30000) / 50.0) if q.security_id == 104 else q for q in p.positions]
+    p.accounts[0].cash = 0
+    assert solve(p).trades == [] or solve(p).out_of_band == []
