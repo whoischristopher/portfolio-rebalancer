@@ -13,6 +13,61 @@
     </form>
 </div>
 
+{% if plan %}
+<div class="card">
+    <h2>Plan Outcome</h2>
+    {% if plan.offer %}
+    <div style="padding: 1rem; background: #fff8e1; border-left: 4px solid #f39c12; border-radius: 4px; margin-bottom: 1rem;">
+        <strong>Some asset classes are still outside their band without selling in a non-registered account.</strong>
+        <p style="margin: 0.5rem 0;">
+            Allowing non-registered sells would bring
+            <strong>{{ plan.offer.fixes|join(', ') if plan.offer.fixes else 'the remaining drift' }}</strong> back within the band
+            using {{ plan.offer.taxable_sells }} non-registered sell(s) ({{ plan.offer.trades }} trades in total),
+            realising an estimated <strong>{{ base_currency }} ${{ "{:,.0f}".format(plan.offer.realized_gain) }}</strong>
+            {{ 'capital gain' if plan.offer.realized_gain >= 0 else 'capital loss' }}.
+            {% if plan.offer.still_out %}Still outside the band even then: {{ plan.offer.still_out|join(', ') }}.{% endif %}
+        </p>
+        <form method="POST" action="{{ url_for('generate_rebalance') }}" style="margin: 0;">
+            <input type="hidden" name="taxable" value="allow">
+            <button type="submit" class="btn btn-sm btn-primary">Use the plan with non-registered sells</button>
+        </form>
+    </div>
+    {% endif %}
+    {% if plan.override == 'allow' %}
+    <div style="padding: 0.75rem; background: #fdecea; border-left: 4px solid #e74c3c; border-radius: 4px; margin-bottom: 1rem;">
+        This plan <strong>includes non-registered sells</strong> (you opted in).
+        Estimated realised {{ 'gain' if plan.realized_gain >= 0 else 'loss' }}: <strong>{{ base_currency }} ${{ "{:,.0f}".format(plan.realized_gain|abs) }}</strong>.
+        <form method="POST" action="{{ url_for('generate_rebalance') }}" style="display: inline; margin-left: 0.5rem;">
+            <button type="submit" class="btn btn-sm">Go back to the plan without them</button>
+        </form>
+    </div>
+    {% endif %}
+    <table>
+        <thead><tr><th>Asset Class</th><th class="text-right">Target %</th><th class="text-right">Drift now</th><th class="text-right">Drift after plan</th></tr></thead>
+        <tbody>
+        {% for d in plan.drift %}
+            <tr>
+                <td>{{ d.name }}</td>
+                <td class="text-right">{{ "%.2f"|format(d.target) }}%</td>
+                <td class="text-right">{{ "%+.2f"|format(d.before) }} pts</td>
+                <td class="text-right" style="{{ 'color:#e74c3c;font-weight:bold' if d.out_of_band else 'color:#27ae60' }}">{{ "%+.2f"|format(d.after) }} pts</td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    <p style="margin-top: 0.75rem; color: #7f8c8d; font-size: 0.9rem;">
+        {{ plan.trades }} trade(s) &middot; {{ plan.taxable_sells }} non-registered sell(s)
+        {% if plan.taxable_sells %}&middot; est. realised {{ 'gain' if plan.realized_gain >= 0 else 'loss' }} {{ base_currency }} ${{ "{:,.0f}".format(plan.realized_gain|abs) }}{% endif %}
+        &middot; mode: {{ plan.mode }}{% if plan.status != 'optimal' %} &middot; <span style="color:#e67e22">solver time limit reached</span>{% endif %}
+    </p>
+    {% if plan.notes %}
+    <ul style="margin-top: 0.5rem; color: #555; font-size: 0.9rem;">
+        {% for n in plan.notes %}<li>{{ n }}</li>{% endfor %}
+    </ul>
+    {% endif %}
+</div>
+{% endif %}
+
 <!-- REBALANCING ALGORITHM DOCUMENTATION -->
 <div class="card" style="background: #f8f9fa; border-left: 4px solid #3498db;">
     <div style="display: flex; justify-content: space-between; align-items: center; cursor: pointer;" onclick="toggleRebalancingInfo()">
@@ -22,54 +77,19 @@
         </button>
     </div>
     
-    <div id="rebalancingDetails" style="display: none; margin-top: 1rem;">
-        <div style="margin-bottom: 1.5rem;">
-            <h4 style="color: #2c3e50; font-size: 1rem; margin-bottom: 0.5rem;">✅ What the Algorithm Does:</h4>
-            <ul style="margin: 0; padding-left: 1.5rem; color: #555;">
-                <li><strong>Portfolio-Level Rebalancing:</strong> Identifies overweight and underweight asset classes across your entire portfolio</li>
-                <li><strong>Account-Matched Trading:</strong> Sells and buys happen in the same account to avoid contribution limit issues</li>
-                <li><strong>Existing Position Preference:</strong> Prefers adding to existing holdings over creating new positions in an account</li>
-                <li><strong>Balanced Threshold:</strong> Only rebalances asset classes that deviate more than {{ "%.2f"|format(balanced_threshold) }}% from target (configurable in Settings)</li>
-                <li><strong>Security Restrictions:</strong> Respects per-security account restrictions (configured on Securities page)</li>
-                <li><strong>Fractional Shares:</strong> Final trade per account uses fractional shares to minimize leftover cash</li>
-            </ul>
-        </div>
-        
-        <div style="margin-bottom: 1.5rem;">
-            <h4 style="color: #2c3e50; font-size: 1rem; margin-bottom: 0.5rem;">🎯 How It Chooses What to Buy:</h4>
-            <ol style="margin: 0; padding-left: 1.5rem; color: #555;">
-                <li><strong>Find Best Account:</strong> Prioritizes accounts with existing holdings AND sellable overweight positions</li>
-                <li><strong>Generate Sells First:</strong> Sells overweight positions in that account to generate cash</li>
-                <li><strong>Generate Buys:</strong> Uses the generated cash to buy underweight positions</li>
-                <li><strong>Prefer Existing Securities:</strong> Adds to positions you already own when possible</li>
-            </ol>
-        </div>
-        
-        <div style="margin-bottom: 1.5rem;">
-            <h4 style="color: #2c3e50; font-size: 1rem; margin-bottom: 0.5rem;">🔄 Transaction Sequencing:</h4>
-            <ol style="margin: 0; padding-left: 1.5rem; color: #555;">
-                <li><strong>Account Grouping:</strong> All sells and buys for an account are grouped together</li>
-                <li><strong>Sell First:</strong> Sells execute first to generate cash</li>
-                <li><strong>Buy Second:</strong> Buys execute using the generated cash</li>
-                <li><strong>No Cross-Account Transfers:</strong> Each account is self-contained</li>
-            </ol>
-        </div>
-        
-        <div>
-            <h4 style="color: #e67e22; font-size: 1rem; margin-bottom: 0.5rem;">⚠️ What the Algorithm Does NOT Do (Yet):</h4>
-            <ul style="margin: 0; padding-left: 1.5rem; color: #555;">
-                <li><strong>Cross-Account Cash Transfers:</strong> Doesn't move money between accounts (respects contribution limits)</li>
-                <li><strong>Tax-Loss Harvesting:</strong> Doesn't identify losing positions to offset gains</li>
-                <li><strong>Wash Sale Awareness:</strong> Doesn't avoid repurchasing securities sold at a loss within 30 days</li>
-                <li><strong>Cost Basis Tracking:</strong> Doesn't track purchase prices or holding periods for capital gains</li>
-                <li><strong>Long-term vs Short-term Gains:</strong> Doesn't consider holding periods for preferential tax treatment</li>
-                <li><strong>Specific Lot Selection:</strong> Doesn't let you choose which shares to sell (FIFO, LIFO, etc.)</li>
-            </ul>
-        </div>
-        
-        <div style="margin-top: 1rem; padding: 0.75rem; background: white; border-radius: 4px; font-size: 0.9rem;">
-            <strong>💡 Pro Tip:</strong> Since rebalancing happens within each account, make sure each account has some cash or overweight positions to sell. You cannot fund purchases in one account by selling from another.
-        </div>
+    <div id="rebalancingDetails" style="display: none; margin-top: 1rem; color: #555;">
+        <p>The plan is produced by an optimiser that weighs every possible set of trades at once and picks the cheapest one, where "cost" means:</p>
+        <ol style="padding-left: 1.5rem;">
+            <li><strong>Drift outside the band</strong> (&plusmn;{{ "%.2f"|format(balanced_threshold) }} pts) &ndash; by far the largest cost. Drift inside the band is nearly free: it doesn't chase exact targets.</li>
+            <li><strong>Capital gains</strong> realised by selling in non-registered accounts (using each holding's book value). Losses aren't penalised.</li>
+            <li><strong>Number of trades</strong> (plus your per-trade cost from Settings).</li>
+            <li><strong>Number of positions</strong> &ndash; new positions are discouraged, and a small, scattered position gets closed out when that's cheap.</li>
+            <li><strong>Account priority</strong> from the Securities page &ndash; a preference, not a hard rule. Restrictions are hard rules.</li>
+        </ol>
+        <p><strong>Always true:</strong> each account funds its own buys (no cash moves between accounts); no account's cash goes negative; currency is converted at spot rate.</p>
+        <p><strong>Non-registered sells</strong> follow your Settings: <em>Never</em>, <em>Allow</em>, or <em>Ask</em> &ndash; Ask plans without them and, if something is still outside its band, shows what selling would fix and the gain it would realise.</p>
+        <p><strong>Superficial loss rule:</strong> a security sold at a loss in a non-registered account is never bought back (in any account) in the same plan, or within 30 days of a loss sale recorded here; and a security bought in the last 30 days isn't sold at a loss. <em>Only trades executed through this app are known &ndash; trades placed directly at your brokerage (or by your spouse) aren't visible.</em></p>
+        <p style="margin-bottom: 0;"><strong>Fractional final buy</strong> (Settings): leftover cash in an account goes into that account's last buy as fractional shares, without pushing any class past its band.</p>
     </div>
 </div>
 
@@ -209,6 +229,11 @@ function toggleRebalancingInfo() {
                 </td>
                 <td class="text-right">
                     <strong>{{ txn.currency }} ${{ "{:,.2f}".format(txn.amount) }}</strong>
+                    {% if txn.action == 'SELL' and txn.realized_gain is not none %}
+                        <br><span style="font-size: 0.8rem; color: {{ '#e74c3c' if txn.realized_gain > 0 else '#27ae60' }};">
+                            est. {{ 'gain' if txn.realized_gain >= 0 else 'loss' }} {{ base_currency }} ${{ "{:,.0f}".format(txn.realized_gain|abs) }}
+                        </span>
+                    {% endif %}
                 </td>
                 <td class="text-center">
                     {% if txn.requires_user_selection %}
@@ -240,7 +265,7 @@ function toggleRebalancingInfo() {
     
     <div style="margin-top: 1rem; padding: 1rem; background: #f8f9fa; border-radius: 4px;">
         <p style="margin: 0; font-size: 0.9rem; color: #7f8c8d;">
-            <strong>Note:</strong> Transactions marked with * use fractional shares to leave zero cash balance (final trades per account).
+            <strong>Note:</strong> Transactions marked with * include fractional shares to use up the account's leftover cash. Foreign-currency amounts are planned at the spot rate, so the final buy may need a small adjustment.
         </p>
     </div>
 </div>

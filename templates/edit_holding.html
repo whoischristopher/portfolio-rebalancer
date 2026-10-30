@@ -38,6 +38,14 @@
   </div>
 
   <div class="form-group">
+    <label for="book_value">Book Value / ACB (total, base currency)</label>
+    <input type="number" step="0.01" id="book_value" name="book_value"
+           value="{{ '%.2f'|format(holding.book_value) if holding.book_value is not none else '' }}" class="form-control"
+           placeholder="Leave blank if unknown">
+    <small style="color: #7f8c8d;">Needed for non-registered accounts so the rebalancer can estimate capital gains. For USD holdings, use the cost in CAD at the exchange rate when bought.</small>
+  </div>
+
+  <div class="form-group">
     <label for="asset_class">Asset Class</label>
       <select id="asset_class_id" name="asset_class_id" class="form-control">
         {% for ac in asset_classes %}

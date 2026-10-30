@@ -1,4 +1,5 @@
 import os
+import json
 import logging
 from flask import Flask, render_template, redirect, url_for, request, jsonify, flash
 from flask_login import LoginManager, login_required, current_user
@@ -36,7 +37,8 @@ from services.portfolio import (
     calculate_asset_class_deltas,
 )
 from services.prices import fetch_prices_from_user_sheet
-from rebalancer import generate_rebalance_transactions
+from rebalancer import generate_plan
+from services.fx import convert_to_base
 
 for handler in logging.root.handlers[:]:
     logging.root.removeHandler(handler)
@@ -194,11 +196,13 @@ def add_holding():
         flash('Unauthorized access', 'error')
         return redirect(url_for('holdings'))
     security = Security.query.get_or_404(security_id)
+    book_value = request.form.get('book_value')
     holding = Holding(
         account_id=account_id,
         security_id=security_id,
         quantity=float(quantity),
         price=float(price) if price else 0.0,
+        book_value=float(book_value) if book_value else None,
     )
     db.session.add(holding)
     db.session.commit()
@@ -219,6 +223,8 @@ def edit_holding(holding_id):
         holding.price = float(request.form.get('price', 0))
         holding.security_id = request.form.get('security_id')
         holding.notes = request.form.get('notes')
+        book_value = request.form.get('book_value', '').strip()
+        holding.book_value = float(book_value) if book_value else None
         db.session.commit()
         flash('Holding updated successfully.', 'success')
         return redirect(url_for('holdings'))
@@ -271,6 +277,10 @@ def update_prices():
                 h.price = float(price)
                 h.updated_at = datetime.utcnow()
                 updated += 1
+        # Also remember the price on the security itself, so the rebalancer can
+        # buy securities that aren't held anywhere yet.
+        for sec in Security.query.filter(Security.ticker.in_(list(prices.keys()))).all():
+            sec.last_price = float(prices[sec.ticker])
         db.session.commit()
         flash(f'Successfully updated {updated} security prices!', 'success')
     except Exception as exc:
@@ -511,6 +521,7 @@ def rebalance():
         base_currency=current_user.base_currency,
         accounts=current_user.accounts,
         balanced_threshold=current_user.balanced_threshold,
+        plan=_plan_summary(),
     )
 
 
@@ -557,11 +568,29 @@ def rebalance_details(asset_class_id):
     )
 
 
+def _plan_summary():
+    try:
+        return json.loads(current_user.last_plan_summary) if current_user.last_plan_summary else None
+    except ValueError:
+        return None
+
+
+def _regenerate_plan(override=None):
+    """Run the optimiser and remember the summary (and any taxable-sell opt-in)."""
+    txns, summary = generate_plan(current_user, taxable_override=override)
+    summary['override'] = override
+    current_user.last_plan_summary = json.dumps(summary)
+    db.session.commit()
+    return txns
+
+
 @app.route('/rebalance/generate', methods=['POST'])
 @login_required
 def generate_rebalance():
+    # 'allow' comes from the "include taxable sells" button on the Ask-mode offer
+    override = request.form.get('taxable') if request.form.get('taxable') in ('allow', 'never') else None
     try:
-        txns = generate_rebalance_transactions(current_user)
+        txns = _regenerate_plan(override)
         flash(f'Generated {len(txns)} rebalance transactions', 'success')
     except Exception as exc:
         log.exception('Error generating rebalance plan')
@@ -587,32 +616,48 @@ def execute_rebalance_transaction(transaction_id):
         holding = Holding.query.filter_by(
             account_id=txn.account_id, security_id=txn.security_id
         ).first()
+        fx = get_exchange_rates(current_user)
+        base = current_user.base_currency or 'CAD'
+        acct_ccy = account.currency or base
+        sec_ccy = txn.currency or (txn.security.currency if txn.security else acct_ccy)
+        # Trade amount in the account's cash currency and in base (ACB) currency, at spot.
+        amount_acct = convert_to_base(txn.amount, sec_ccy, acct_ccy, fx)
+        amount_base = convert_to_base(txn.amount, sec_ccy, base, fx)
         if txn.action == 'SELL':
-            if not holding or holding.quantity < txn.quantity:
+            if not holding or holding.quantity < txn.quantity - 1e-9:
                 raise ValueError(
                     f'Insufficient quantity to sell: have '
                     f'{holding.quantity if holding else 0}, need {txn.quantity}'
                 )
+            # Average-cost ACB: the sold fraction of book value leaves with the shares.
+            if holding.book_value is not None and holding.quantity > 0:
+                acb_sold = holding.book_value * (txn.quantity / holding.quantity)
+                holding.book_value -= acb_sold
+                if not account.is_registered:
+                    txn.realized_gain = amount_base - acb_sold
             holding.quantity -= txn.quantity
-            if holding.quantity <= 0:
+            if holding.quantity <= 1e-9:
                 db.session.delete(holding)
-            account.cash_balance = (account.cash_balance or 0) + txn.amount
+            account.cash_balance = (account.cash_balance or 0) + amount_acct
         else:  # BUY
-            if (account.cash_balance or 0) < txn.amount:
+            if (account.cash_balance or 0) < amount_acct - 0.01:
                 raise ValueError(
-                    f'Insufficient cash: have {account.cash_balance:.2f}, '
-                    f'need {txn.amount:.2f}'
+                    f'Insufficient cash: have {account.cash_balance:.2f} {acct_ccy}, '
+                    f'need {amount_acct:.2f} {acct_ccy}'
                 )
             if holding:
                 holding.quantity += txn.quantity
+                if holding.book_value is not None:
+                    holding.book_value += amount_base
             else:
                 db.session.add(Holding(
                     account_id=txn.account_id,
                     security_id=txn.security_id,
                     quantity=txn.quantity,
                     price=txn.price,
+                    book_value=amount_base,
                 ))
-            account.cash_balance = (account.cash_balance or 0) - txn.amount
+            account.cash_balance = (account.cash_balance or 0) - amount_acct
         txn.executed = True
         txn.executed_at = datetime.utcnow()
         db.session.commit()
@@ -620,7 +665,8 @@ def execute_rebalance_transaction(transaction_id):
 
         # Regen is best-effort — don't let it mask the successful trade
         try:
-            generate_rebalance_transactions(current_user)
+            prev = _plan_summary() or {}
+            _regenerate_plan(prev.get('override'))
         except Exception as regen_exc:
             log.warning('Post-execution regen failed (non-fatal): %s', regen_exc)
             flash('Trade executed, but plan could not be regenerated automatically. Refresh manually.', 'warning')
@@ -655,9 +701,15 @@ def update_settings():
     price_sheet_id = request.form.get('price_sheet_id', '').strip()
     if price_sheet_id:
         current_user.price_sheet_id = price_sheet_id
-    current_user.trading_costs_enabled = request.form.get('trading_costs_enabled') == 'on'
     current_user.precision_rebalancing = request.form.get('precision_rebalancing') == 'on'
-    current_user.balanced_threshold = float(request.form.get('balanced_threshold', 0.5))
+    try:
+        current_user.balanced_threshold = max(0.0, float(request.form.get('balanced_threshold', 0.5)))
+        current_user.trade_cost = max(0.0, float(request.form.get('trade_cost') or 0))
+    except ValueError:
+        flash('Threshold and trade cost must be numbers', 'error')
+        return redirect(url_for('settings'))
+    mode = request.form.get('taxable_sell_mode', 'ask')
+    current_user.taxable_sell_mode = mode if mode in ('never', 'ask', 'allow') else 'ask'
     db.session.commit()
     flash('Settings updated successfully', 'success')
     return redirect(url_for('settings'))
@@ -769,9 +821,36 @@ def forbidden(error):
 # ---------------------------------------------------------------------------
 # Startup
 # ---------------------------------------------------------------------------
+# Columns added after the initial schema. create_all() never alters existing
+# tables, so add any that are missing (SQLite and Postgres both accept this DDL).
+_ADDED_COLUMNS = [
+    ('users', 'trade_cost', 'FLOAT DEFAULT 0'),
+    ('users', 'taxable_sell_mode', "VARCHAR(10) DEFAULT 'ask'"),
+    ('users', 'precision_rebalancing', 'BOOLEAN DEFAULT TRUE'),
+    ('holdings', 'book_value', 'FLOAT'),
+    ('rebalance_transactions', 'realized_gain', 'FLOAT'),
+    ('securities', 'last_price', 'FLOAT'),
+    ('users', 'last_plan_summary', 'TEXT'),
+]
+
+
+def _migrate_columns():
+    from sqlalchemy import inspect, text
+    insp = inspect(db.engine)
+    tables = set(insp.get_table_names())
+    with db.engine.begin() as conn:
+        for table, column, ddl in _ADDED_COLUMNS:
+            if table not in tables:
+                continue
+            if column not in {c['name'] for c in insp.get_columns(table)}:
+                conn.execute(text(f'ALTER TABLE {table} ADD COLUMN {column} {ddl}'))
+                log.info('Migrated: added %s.%s', table, column)
+
+
 def _init_db():
     with app.app_context():
         db.create_all()
+        _migrate_columns()
         log.info('Database schema ensured.')
 
 

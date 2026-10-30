@@ -1,0 +1,129 @@
+"""End-to-end flow through the Flask app with a throwaway SQLite database:
+Ask mode → opt in to taxable sells → execute (ACB + realised gain) → regenerate.
+
+Needs the app's real dependencies (pip install -r requirements.txt).
+Run:  python -m pytest tests/ -q
+"""
+import json
+import os
+import sys
+import tempfile
+from datetime import datetime
+
+import pytest
+
+pytest.importorskip("flask_sqlalchemy")
+pytest.importorskip("flask_login")
+pytest.importorskip("authlib")
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
+_DB = os.path.join(tempfile.mkdtemp(), "portfolio.db")
+os.environ.setdefault("SECRET_KEY", "test")
+os.environ["DATABASE_URL"] = f"sqlite:///{_DB}"
+
+
+def test_rebalance_flow():
+    from app import app, db
+    from models import (Account, AssetClass, ExchangeRate, Holding, RebalanceTransaction,
+                        Security, SecurityPreference, Target, User)
+
+    with app.app_context():
+        for frm, to, r in (("USD", "CAD", 1.38), ("CAD", "USD", 1 / 1.38)):
+            db.session.add(ExchangeRate(from_currency=frm, to_currency=to, rate=r, date=datetime.utcnow(), source="test"))
+        u = User(google_id="g1", email="t@example.com", name="Tester", base_currency="CAD", taxable_sell_mode="ask")
+        db.session.add(u); db.session.flush()
+        acs = {n: AssetClass(name=n) for n in ("CA Equity", "US Equity", "Intl Equity", "Bonds")}
+        db.session.add_all(acs.values()); db.session.flush()
+        for n, pct in (("CA Equity", 30), ("US Equity", 40), ("Intl Equity", 20), ("Bonds", 10)):
+            db.session.add(Target(user_id=u.id, asset_class_id=acs[n].id, target_percentage=pct))
+        S = {}
+        for t, ac, ccy, lp in (("XIC", "CA Equity", "CAD", None), ("ITOT", "US Equity", "USD", None), ("XUU", "US Equity", "CAD", None),
+                               ("XEF", "Intl Equity", "CAD", None), ("ZAG", "Bonds", "CAD", None), ("VAB", "Bonds", "CAD", 23.0)):
+            S[t] = Security(ticker=t, name=t, asset_class_id=acs[ac].id, currency=ccy, last_price=lp)
+        db.session.add_all(S.values()); db.session.flush()
+        rrsp = Account(user_id=u.id, name="RRSP", is_registered=True, cash_balance=0, currency="CAD")
+        tfsa = Account(user_id=u.id, name="TFSA", is_registered=True, cash_balance=1000, currency="CAD")
+        nr = Account(user_id=u.id, name="Non-Reg", is_registered=False, cash_balance=0, currency="CAD")
+        db.session.add_all([rrsp, tfsa, nr]); db.session.flush()
+        db.session.add(SecurityPreference(user_id=u.id, security_id=S["ITOT"].id, restriction_type="restricted_to_accounts",
+                                          account_config={"allowed": [rrsp.id]}))
+        # Registered accounts are balanced-ish; the taxable account holds the big CA overweight at a gain
+        for acc, t, q, p, bv in ((rrsp, "ITOT", 300, 130, None), (rrsp, "XEF", 800, 38, None),
+                                 (tfsa, "XUU", 300, 60, None), (tfsa, "ZAG", 300, 14, None),
+                                 (nr, "XIC", 2000, 40, 50000.0), (nr, "XUU", 200, 60, 14000.0)):
+            db.session.add(Holding(account_id=acc.id, security_id=S[t].id, quantity=q, price=p, book_value=bv))
+        db.session.commit()
+        uid, ids = u.id, {k: v.id for k, v in S.items()}
+        acc_ids = {a.name: a.id for a in (rrsp, tfsa, nr)}
+
+    c = app.test_client()
+    with c.session_transaction() as s:
+        s["_user_id"] = str(uid); s["_fresh"] = True
+
+    def plan():
+        with app.app_context():
+            return json.loads(User.query.get(uid).last_plan_summary)
+
+    def txns():
+        with app.app_context():
+            return [(t.id, t.action, t.account.name, t.security.ticker, t.quantity, t.amount, t.realized_gain)
+                    for t in RebalanceTransaction.query.filter_by(user_id=uid, executed=False).order_by(RebalanceTransaction.execution_order)]
+
+    # 3. Ask mode
+    r = c.post("/rebalance/generate"); assert r.status_code == 302, r.status_code
+    p = plan()
+    print("\nASK plan:", p["trades"], "trades,", p["taxable_sells"], "taxable sells; drift after:",
+          {d["name"]: d["after"] for d in p["drift"]}, "\n offer:", p.get("offer"), "\n notes:", p["notes"])
+    for t in txns(): print("  ", t)
+    assert p["taxable_sells"] == 0 and "offer" in p
+    page = c.get("/rebalance").get_data(as_text=True)
+    assert "Plan Outcome" in page and "Use the plan with non-registered sells" in page
+
+    # 4. opt in
+    r = c.post("/rebalance/generate", data={"taxable": "allow"}); assert r.status_code == 302
+    p = plan()
+    print("\nALLOW plan:", p["trades"], "trades,", p["taxable_sells"], "taxable sells, gain", p["realized_gain"],
+          {d["name"]: d["after"] for d in p["drift"]})
+    for t in txns(): print("  ", t)
+    assert p["taxable_sells"] >= 1 and p["override"] == "allow" and not any(d["out_of_band"] for d in p["drift"])
+    page = c.get("/rebalance").get_data(as_text=True)
+    assert "includes non-registered sells" in page and "est. gain" in page
+
+    # 5. execute the taxable sell, check ACB + cash + realised gain, and that regen kept the opt-in
+    sell = next(t for t in txns() if t[1] == "SELL" and t[2] == "Non-Reg")
+    with app.app_context():
+        h = Holding.query.filter_by(account_id=acc_ids["Non-Reg"], security_id=ids[sell[3]]).first()
+        q0, bv0 = h.quantity, h.book_value
+    r = c.post(f"/rebalance/execute/{sell[0]}"); assert r.status_code == 302
+    with app.app_context():
+        h = Holding.query.filter_by(account_id=acc_ids["Non-Reg"], security_id=ids[sell[3]]).first()
+        done = RebalanceTransaction.query.get(sell[0])
+        exp_acb = bv0 * sell[4] / q0
+        assert abs((h.book_value if h else 0) - (bv0 - exp_acb)) < 0.01
+        assert abs(done.realized_gain - (sell[5] - exp_acb)) < 0.01
+        assert abs(Account.query.get(acc_ids["Non-Reg"]).cash_balance - sell[5]) < 0.01
+        print(f"\nexecuted {sell[3]} sell: realised gain {done.realized_gain:,.2f}, remaining ACB {h.book_value if h else 0:,.2f}")
+    assert plan()["override"] == "allow", "regen after execute must keep the opt-in"
+
+    # 6. execute a USD buy in a CAD account → cash converted at spot
+    usd_buy = next((t for t in txns() if t[1] == "BUY" and t[3] == "ITOT"), None)
+    if usd_buy:
+        with app.app_context(): cash0 = Account.query.get(acc_ids[usd_buy[2]]).cash_balance
+        c.post(f"/rebalance/execute/{usd_buy[0]}")
+        with app.app_context():
+            assert abs(cash0 - Account.query.get(acc_ids[usd_buy[2]]).cash_balance - usd_buy[5] * 1.38) < 0.05
+        print("USD buy debited in CAD at spot ✓")
+
+    # 7. other pages
+    for url in ("/settings", "/holdings", "/dashboard", "/rebalance"):
+        r = c.get(url); assert r.status_code == 200, (url, r.status_code)
+    with app.app_context():
+        hid = Holding.query.filter_by(account_id=acc_ids["Non-Reg"]).first().id
+    assert c.get(f"/holdings/{hid}/edit").status_code == 200
+    r = c.post("/settings/update", data={"base_currency": "CAD", "balanced_threshold": "1.0", "trade_cost": "4.95",
+                                          "taxable_sell_mode": "never", "precision_rebalancing": "on"})
+    with app.app_context():
+        u = User.query.get(uid); assert (u.trade_cost, u.taxable_sell_mode, u.balanced_threshold) == (4.95, "never", 1.0)
+    c.post("/rebalance/generate")
+    p = plan(); assert p["taxable_sells"] == 0 and "offer" not in p and p["mode"] == "never"
