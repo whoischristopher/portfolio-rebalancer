@@ -483,17 +483,17 @@ def rebalance():
         user_id=current_user.id, executed=False
     ).order_by(RebalanceTransaction.execution_order).all()
 
-    # Drop pending trades whose account or security has since been deleted.
+    # A plan is one coordinated set of trades: if any of them refers to an account or
+    # security that has since been deleted, the whole plan is invalid – discard it.
     orphans = [t for t in transactions
                if t.account is None or (t.security is None and not t.requires_user_selection)]
     if orphans:
-        for t in orphans:
-            db.session.delete(t)
-        db.session.commit()
-        log.warning('Removed %d orphaned pending transactions for user %s', len(orphans), current_user.id)
-        flash('Some planned trades referred to deleted accounts or securities and were removed – '
-              'generate a new plan.', 'warning')
-        transactions = [t for t in transactions if t not in orphans]
+        _discard_pending_plan()
+        log.warning('Discarded plan for user %s: %d trade(s) referred to deleted accounts/securities',
+                    current_user.id, len(orphans))
+        flash('Your plan referred to an account or security that has since been deleted, so it was '
+              'discarded. Click "Generate Rebalance Plan" for a new one.', 'warning')
+        transactions = []
 
     # Group by account and calculate totals
     from collections import defaultdict
@@ -581,6 +581,12 @@ def rebalance_details(asset_class_id):
         security_restrictions=security_restrictions,
         base_currency=current_user.base_currency,
     )
+
+
+def _discard_pending_plan():
+    RebalanceTransaction.query.filter_by(user_id=current_user.id, executed=False).delete()
+    current_user.last_plan_summary = None
+    db.session.commit()
 
 
 def _plan_summary():
@@ -683,8 +689,13 @@ def execute_rebalance_transaction(transaction_id):
             prev = _plan_summary() or {}
             _regenerate_plan(prev.get('override'))
         except Exception as regen_exc:
-            log.warning('Post-execution regen failed (non-fatal): %s', regen_exc)
-            flash('Trade executed, but plan could not be regenerated automatically. Refresh manually.', 'warning')
+            # The remaining trades were planned together with the one just executed and
+            # may no longer make sense on their own – don't leave half a plan on screen.
+            log.exception('Post-execution regen failed: %s', regen_exc)
+            db.session.rollback()
+            _discard_pending_plan()
+            flash('Trade executed, but a new plan could not be generated, so the rest of the old plan '
+                  'was cleared. Click "Generate Rebalance Plan" to try again.', 'warning')
 
     except ValueError as exc:
         db.session.rollback()

@@ -12,7 +12,8 @@ All money values are in the user's BASE currency unless the name says
 What the optimiser minimises (every term is in "dollar-equivalent pain"):
 
   drift_out  × $ an asset class sits OUTSIDE the balanced band
-  drift_in   × $ an asset class sits inside the band (tiny – breaks ties)
+  drift_in   × percentage points a class sits inside the band (tiny – breaks ties;
+               per point rather than per $, so a $6M portfolio isn't fussier than a $200k one)
   gain       × $ capital gain realised by selling in a taxable account
   ticket     × number of trades (+ the user's real per-trade cost)
   position   × number of open positions left after trading
@@ -80,7 +81,7 @@ class PositionIn:
 @dataclass
 class Weights:
     drift_out: float = 1.0
-    drift_in: float = 0.002
+    drift_in_pp: float = 1.0           # $-equivalent per percentage point inside the band (scale-free)
     gain: float = 1.0
     unknown_gain_fraction: float = 1.0   # missing ACB → assume proceeds are all gain
     ticket: float = 10.0
@@ -88,6 +89,9 @@ class Weights:
     priority: float = 0.002
     idle_cash: float = 0.01
     turnover: float = 0.0005             # per $ traded – prefers small moves over big swaps
+    # Stage 2 ("aim for target"): convex in-band cost per $, by quarter of the band.
+    # Rising costs mean the furthest-from-target classes are fixed first.
+    target_pull: tuple = (0.01, 0.02, 0.04, 0.08)
 
 
 @dataclass
@@ -105,6 +109,7 @@ class Problem:
     recent_buys: set[int] = field(default_factory=set)        # sec ids bought ≤30d ago (any account)
     recent_loss_sells: set[int] = field(default_factory=set)  # sec ids sold at a loss ≤30d ago (taxable)
     fractional_final: bool = True
+    aim_for_target: bool = True     # stage 2: same trade count & tax, sized toward target
     weights: Weights = field(default_factory=Weights)
     time_limit: float = 10.0
 
@@ -255,11 +260,14 @@ def solve(p: Problem) -> Result:
         notes.append("Book value missing for " + ", ".join(sorted(missing_acb)) +
                      " in taxable accounts – treated as 100% gain (most conservative).")
 
+    drift_in = W.drift_in_pp * 100.0 / total      # per $ of in-band drift
     cls_vars = {}
     for k in p.targets:
         cls_vars[k] = dict(
             oo=V.add(cost=W.drift_out), uo=V.add(cost=W.drift_out),
-            oi=V.add(0, band, cost=W.drift_in), ui=V.add(0, band, cost=W.drift_in),
+            # in-band deviation split into 4 tiers (flat cost in stage 1, convex in stage 2)
+            oi=[V.add(0, band / 4, cost=drift_in) for _ in W.target_pull],
+            ui=[V.add(0, band / 4, cost=drift_in) for _ in W.target_pull],
         )
 
     # ---- constraints --------------------------------------------------- #
@@ -292,7 +300,7 @@ def solve(p: Problem) -> Result:
             row(coefs, -np.inf, a.cash)
 
     for k, cv in cls_vars.items():  # drift definition per asset class
-        coefs = {cv["oo"]: -1, cv["oi"]: -1, cv["uo"]: 1, cv["ui"]: 1}
+        coefs = {cv["oo"]: -1, cv["uo"]: 1, **{v: -1 for v in cv["oi"]}, **{v: 1 for v in cv["ui"]}}
         for i in pairs:
             if i["sec"].asset_class_id == k:
                 pr = i["sec"].price
@@ -314,18 +322,47 @@ def solve(p: Problem) -> Result:
     # with a fixed variable so that rel_gap × anchor ≈ the absolute tolerance we want
     # (well under one trade ticket).
     anchor = V.add(1, 1, cost=_GAP_ANCHOR - const_offset)
-    A = lil_matrix((len(rows), V.n))
-    for r, coefs in enumerate(rows):
-        for v, c in coefs.items():
-            A[r, v] = c
-    res = milp(
-        np.array(V.c), integrality=np.array(V.integ),
-        bounds=Bounds(np.array(V.lb), np.array(V.ub)),
-        constraints=LinearConstraint(A.tocsr(), np.array(lo), np.array(hi)),
-        options={"time_limit": p.time_limit, "mip_rel_gap": _ABS_TOL / _GAP_ANCHOR},
-    )
+
+    def run(costs, rows, lo, hi):
+        A = lil_matrix((len(rows), V.n))
+        for r, coefs in enumerate(rows):
+            for v, c in coefs.items():
+                A[r, v] = c
+        return milp(
+            np.array(costs), integrality=np.array(V.integ),
+            bounds=Bounds(np.array(V.lb), np.array(V.ub)),
+            constraints=LinearConstraint(A.tocsr(), np.array(lo), np.array(hi)),
+            options={"time_limit": p.time_limit, "mip_rel_gap": _ABS_TOL / _GAP_ANCHOR},
+        )
+
+    # Stage 1: cheapest plan that gets every class inside its band.
+    res = run(V.c, rows, lo, hi)
     if res.x is None:
         raise RuntimeError(f"Optimiser found no feasible plan: {res.message}")
+
+    # Stage 2: if we're trading anyway, size the trades toward target – but with
+    # no more trades and no more realised gain than stage 1.  Within-band portfolios
+    # that need no trades are left alone.
+    tickets = [v for i in pairs for v in (i["yb"], i["ys"])]
+    n_trades = int(round(sum(res.x[v] for v in tickets)))
+    if p.aim_for_target and n_trades > 0:
+        gain_coef = {i["s"]: W.gain * max(i["gain_ps"], 0.0) for i in pairs
+                     if i["acct"].taxable and i["gain_ps"] > 0}
+        stage1_gain = sum(res.x[v] * c for v, c in gain_coef.items())
+        costs2 = list(V.c)
+        for cv in cls_vars.values():
+            for tier, w in zip(range(len(W.target_pull)), W.target_pull):
+                costs2[cv["oi"][tier]] = w
+                costs2[cv["ui"][tier]] = w
+        rows2, lo2, hi2 = list(rows), list(lo), list(hi)
+        rows2.append({v: 1 for v in tickets}); lo2.append(-np.inf); hi2.append(n_trades)
+        if gain_coef:
+            rows2.append(gain_coef); lo2.append(-np.inf); hi2.append(stage1_gain + 1.0)
+        res2 = run(costs2, rows2, lo2, hi2)
+        if res2.x is not None:
+            res = res2
+        else:
+            log.warning("Stage-2 (aim for target) solve failed: %s – keeping stage-1 plan", res2.message)
     if res.status != 0:
         notes.append("Optimiser hit its time limit – plan is good but may not be optimal.")
     x = res.x

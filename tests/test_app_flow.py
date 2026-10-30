@@ -166,9 +166,8 @@ def test_rebalance_flow():
                                             quantity=1, price=40, amount=40, currency="CAD", execution_order=2))
         db.session.commit()
     assert c.get("/rebalance").status_code == 200
-    with app.app_context():
-        assert not RebalanceTransaction.query.filter(RebalanceTransaction.account_id == 9999).count()
-        assert not RebalanceTransaction.query.filter(RebalanceTransaction.security_id == 8888).count()
+    with app.app_context():   # one bad trade invalidates the whole plan
+        assert RebalanceTransaction.query.filter_by(user_id=uid, executed=False).count() == 0
     c.post(f"/accounts/{acc_ids['Non-Reg']}/delete")
     with app.app_context():
         assert not RebalanceTransaction.query.filter_by(account_id=acc_ids["Non-Reg"]).count()
