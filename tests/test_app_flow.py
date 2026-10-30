@@ -157,3 +157,19 @@ def test_rebalance_flow():
         itot = Holding.query.filter_by(account_id=acc_ids["RRSP"], security_id=ids["ITOT"]).first()
         assert abs(itot.book_value - 31310.0) < 0.01, itot.book_value                              # stays USD
         assert abs(Account.query.get(acc_ids["RRSP"]).cash_balance - (2000 - 1310 * 1.38)) < 0.05  # CAD cash at spot
+
+    # --- orphaned pending trades (account/security deleted) must not crash /rebalance
+    with app.app_context():
+        db.session.add(RebalanceTransaction(user_id=uid, account_id=9999, security_id=ids["XIC"], action="BUY",
+                                            quantity=1, price=40, amount=40, currency="CAD", execution_order=1))
+        db.session.add(RebalanceTransaction(user_id=uid, account_id=acc_ids["TFSA"], security_id=8888, action="BUY",
+                                            quantity=1, price=40, amount=40, currency="CAD", execution_order=2))
+        db.session.commit()
+    assert c.get("/rebalance").status_code == 200
+    with app.app_context():
+        assert not RebalanceTransaction.query.filter(RebalanceTransaction.account_id == 9999).count()
+        assert not RebalanceTransaction.query.filter(RebalanceTransaction.security_id == 8888).count()
+    c.post(f"/accounts/{acc_ids['Non-Reg']}/delete")
+    with app.app_context():
+        assert not RebalanceTransaction.query.filter_by(account_id=acc_ids["Non-Reg"]).count()
+    assert c.get("/rebalance").status_code == 200

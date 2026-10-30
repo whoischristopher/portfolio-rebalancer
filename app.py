@@ -135,6 +135,8 @@ def delete_account(account_id):
     if account.user_id != current_user.id:
         flash('Unauthorized access', 'error')
         return redirect(url_for('accounts'))
+    # No FK cascade from transactions to accounts – remove them explicitly.
+    RebalanceTransaction.query.filter_by(account_id=account.id).delete()
     db.session.delete(account)
     db.session.commit()
     flash(f'Account "{account.name}" deleted successfully', 'success')
@@ -425,6 +427,7 @@ def edit_security(security_id):
 @login_required
 def delete_security(security_id):
     s = Security.query.get_or_404(security_id)
+    RebalanceTransaction.query.filter_by(security_id=s.id, executed=False).delete()
     db.session.delete(s)
     db.session.commit()
     flash(f'Deleted {s.ticker}.', 'success')
@@ -479,6 +482,18 @@ def rebalance():
     transactions = RebalanceTransaction.query.filter_by(
         user_id=current_user.id, executed=False
     ).order_by(RebalanceTransaction.execution_order).all()
+
+    # Drop pending trades whose account or security has since been deleted.
+    orphans = [t for t in transactions
+               if t.account is None or (t.security is None and not t.requires_user_selection)]
+    if orphans:
+        for t in orphans:
+            db.session.delete(t)
+        db.session.commit()
+        log.warning('Removed %d orphaned pending transactions for user %s', len(orphans), current_user.id)
+        flash('Some planned trades referred to deleted accounts or securities and were removed – '
+              'generate a new plan.', 'warning')
+        transactions = [t for t in transactions if t not in orphans]
 
     # Group by account and calculate totals
     from collections import defaultdict
