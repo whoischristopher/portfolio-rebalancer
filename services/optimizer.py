@@ -68,6 +68,7 @@ class SecurityIn:
     price: float                      # base currency, per share
     price_native: float               # security currency, per share
     currency: str
+    sellable: bool = True             # False = illiquid (e.g. private fund, redemption takes months)
 
 
 @dataclass
@@ -132,7 +133,8 @@ class Result:
     status: str
     trades: list[Trade]
     total_value: float
-    drift_before: dict[int, float]    # asset_class_id -> percentage points vs target
+    effective_targets: dict[int, float]   # % after re-normalising around unsellable holdings
+    drift_before: dict[int, float]    # asset_class_id -> percentage points vs effective target
     drift_after: dict[int, float]
     out_of_band: list[int]            # asset classes still outside the band after trading
     realized_gain: float
@@ -198,7 +200,38 @@ def solve(p: Problem) -> Result:
         notes.append(f"{sum(untargeted.values()):,.0f} is held in asset classes with no target; "
                      "those holdings are left untouched.")
 
-    target_val = {k: total * pct / 100 for k, pct in p.targets.items()}
+    # Holdings that can't be sold may alone exceed their class's target. That excess
+    # can't be fixed by trading, so treat it as given: the class's effective target
+    # becomes what's locked in, and the other targets shrink proportionally.
+    locked = {k: 0.0 for k in p.targets}
+    for (a_id, s_id), (q, _) in held.items():
+        if not sec[s_id].sellable and sec[s_id].asset_class_id in locked:
+            locked[sec[s_id].asset_class_id] += q * sec[s_id].price
+    eff = dict(p.targets)
+    pinned: set = set()
+    while True:
+        newly = {k for k in p.targets if k not in pinned and locked[k] / total * 100 > eff[k] + 1e-9}
+        if not newly:
+            break
+        pinned |= newly
+        free = [k for k in p.targets if k not in pinned]
+        for k in pinned:
+            eff[k] = locked[k] / total * 100
+        free_orig = sum(p.targets[k] for k in free)
+        room = sum(p.targets.values()) - sum(eff[k] for k in pinned)
+        for k in free:
+            eff[k] = p.targets[k] * room / free_orig if free_orig > 0 else 0.0
+    for k in sorted(pinned, key=lambda k: -locked[k]):
+        name = p.class_names.get(k, str(k))
+        over_pp = eff[k] - p.targets[k]
+        msg = (f"{name}: {eff[k]:.2f}% is in holdings that can't be sold (target {p.targets[k]:.2f}%) – "
+               f"the other targets were reduced proportionally to compensate.")
+        if over_pp > p.threshold_pp:
+            msg += (f" Consider requesting a redemption of about {over_pp / 100 * total:,.0f} "
+                    f"to bring it back to target.")
+        notes.append(msg)
+
+    target_val = {k: total * pct / 100 for k, pct in eff.items()}
     band = p.threshold_pp / 100 * total
     drift_before = {k: (cur_by_class[k] - target_val[k]) / total * 100 for k in p.targets}
 
@@ -234,7 +267,7 @@ def solve(p: Problem) -> Result:
             else:
                 gain_ps = s.price - bv / q_held
         is_loss = a.taxable and q_held > 0 and bv is not None and gain_ps < 0
-        can_sell = q_held > 0 and (not a.taxable or p.allow_taxable_sells)
+        can_sell = q_held > 0 and s.sellable and (not a.taxable or p.allow_taxable_sells)
         if is_loss and s_id in p.recent_buys:
             can_sell = False   # loss would be superficial
             notes.append(f"{s.ticker} in {a.name}: sale at a loss blocked – bought within the last 30 days.")
@@ -432,7 +465,7 @@ def solve(p: Problem) -> Result:
     return Result(
         status="optimal" if res.status == 0 else "time_limit",
         trades=trades, total_value=total,
-        drift_before=drift_before, drift_after=drift_after, out_of_band=out,
+        effective_targets=eff, drift_before=drift_before, drift_after=drift_after, out_of_band=out,
         realized_gain=sum(t.realized_gain or 0 for t in sells_tax),
         taxable_sells=len(sells_tax), cash_left=cash_left, notes=_dedupe(notes),
         objective=float(res.fun) - _GAP_ANCHOR,

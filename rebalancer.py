@@ -86,6 +86,7 @@ def build_problem(user, exchange_rates, allow_taxable_sells: bool) -> tuple[Prob
             id=sec.id, ticker=sec.ticker, asset_class_id=sec.asset_class_id,
             price=convert_to_base(native, sec.currency, base, exchange_rates),
             price_native=native, currency=sec.currency,
+            sellable=not bool(getattr(sec, "is_illiquid", False)),
         ))
     if unpriced:
         notes.append("No price for " + ", ".join(sorted(unpriced)) +
@@ -140,6 +141,7 @@ def _summarise(result, problem) -> dict:
         "drift": [
             {"name": names[k], "before": round(result.drift_before[k], 2),
              "after": round(result.drift_after[k], 2), "target": problem.targets[k],
+             "effective_target": round(result.effective_targets[k], 2),
              "out_of_band": k in result.out_of_band}
             for k in sorted(problem.targets, key=lambda k: -problem.targets[k])
         ],

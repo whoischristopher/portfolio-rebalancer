@@ -26,7 +26,7 @@
         <tbody>
             {% for s in securities %}
             <tr>
-                <td><strong>{{ s.ticker }}</strong></td>
+                <td><strong>{{ s.ticker }}</strong>{% if s.is_illiquid %} <span title="Can't be sold on demand – the rebalancer never sells it" style="background:#8e44ad;color:white;padding:0.1rem 0.4rem;border-radius:4px;font-size:0.7rem;">illiquid</span>{% endif %}</td>
                 <td>{{ s.name }}</td>
                 <td>{{ s.asset_class.name if s.asset_class else '-' }}</td>
                 <td>{{ s.currency }}</td>

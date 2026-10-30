@@ -48,7 +48,7 @@
         {% for d in plan.drift %}
             <tr>
                 <td>{{ d.name }}</td>
-                <td class="text-right">{{ "%.2f"|format(d.target) }}%</td>
+                <td class="text-right">{{ "%.2f"|format(d.target) }}%{% if d.effective_target is defined and (d.effective_target - d.target)|abs >= 0.005 %}<br><span style="font-size:0.8rem;color:#8e44ad" title="Adjusted around holdings that can't be sold">→ {{ "%.2f"|format(d.effective_target) }}%</span>{% endif %}</td>
                 <td class="text-right">{{ "%+.2f"|format(d.before) }} pts</td>
                 <td class="text-right" style="{{ 'color:#e74c3c;font-weight:bold' if d.out_of_band else 'color:#27ae60' }}">{{ "%+.2f"|format(d.after) }} pts</td>
             </tr>
@@ -84,6 +84,7 @@
             <li><strong>Capital gains</strong> realised by selling in non-registered accounts (using each holding's book value). Losses aren't penalised.</li>
             <li><strong>Number of trades</strong> (plus your per-trade cost from Settings).</li>
             <li><strong>Number of positions</strong> &ndash; new positions are discouraged, and a small, scattered position gets closed out when that's cheap.</li>
+            <li><strong>Illiquid holdings</strong> (marked on the Securities page) are never sold. If they alone put a class over target, that class's target is raised to match and the others are reduced proportionally.</li>
             <li><strong>Account priority</strong> from the Securities page &ndash; a preference, not a hard rule. Restrictions are hard rules.</li>
         </ol>
         <p><strong>Two stages:</strong> first the fewest, cheapest trades that bring every class inside its band (if everything is already inside, nothing is traded). Then those same trades &ndash; no more of them and no extra capital gain &ndash; are re-sized to land as close to target as possible, furthest-off classes first.</p>

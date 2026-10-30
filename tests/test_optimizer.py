@@ -267,3 +267,42 @@ def test_inside_band_still_means_no_trades():
     p.positions = [PositionIn(1, 104, (501756 + 30000) / 50.0) if q.security_id == 104 else q for q in p.positions]
     p.accounts[0].cash = 0
     assert solve(p).trades == [] or solve(p).out_of_band == []
+
+
+# --------------------------------------------------------------------------- #
+# Illiquid holdings (private funds): never sold, targets re-normalised around them
+# --------------------------------------------------------------------------- #
+def _illiquid(p, classes):
+    for s in p.securities:
+        if s.asset_class_id in classes:
+            s.sellable = False
+    return p
+
+
+def test_illiquid_never_sold_and_targets_renormalised():
+    res = solve(_illiquid(user_portfolio(), {5, 6}))        # Private Equity, Private Credit
+    assert not [t for t in res.trades if t.action == "SELL" and t.security_id in (105, 106)]
+    # PE (5.32% actual vs 5% target) is pinned at actual; PC (4.10% vs 4%) too
+    assert res.effective_targets[5] == pytest.approx(5.32, abs=0.01)
+    assert res.effective_targets[6] == pytest.approx(4.10, abs=0.01)
+    assert sum(res.effective_targets.values()) == pytest.approx(100, abs=1e-6)
+    # liquid classes keep their relative mix: US/CA ratio unchanged
+    assert res.effective_targets[1] / res.effective_targets[2] == pytest.approx(36 / 22)
+    assert not res.out_of_band
+    assert any("can't be sold" in n for n in res.notes)
+
+
+def test_illiquid_far_over_target_suggests_redemption():
+    p = _illiquid(user_portfolio(), {5})
+    p.positions = [PositionIn(1, 105, 315384 * 2 / 50.0) if q.security_id == 105 else q for q in p.positions]
+    res = solve(p)
+    assert any("redemption" in n for n in res.notes)
+    assert not [t for t in res.trades if t.action == "SELL" and t.security_id == 105]
+
+
+def test_illiquid_underweight_can_still_be_bought():
+    p = _illiquid(user_portfolio(), {5})
+    p.positions = [PositionIn(1, 105, 315384 * 0.5 / 50.0) if q.security_id == 105 else q for q in p.positions]
+    res = solve(p)
+    assert any(t.action == "BUY" and t.security_id == 105 for t in res.trades)
+    assert res.effective_targets[5] == 5
