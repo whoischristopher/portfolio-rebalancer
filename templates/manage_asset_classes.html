@@ -3,7 +3,7 @@
 {% block title %}Manage Asset Classes - Portfolio Rebalancer{% endblock %}
 
 {% block content %}
-<h1 style="margin-bottom: 2rem;">Manage Asset Classes</h1>
+<h1 style="margin-bottom: 1.5rem;">Manage Asset Classes</h1>
 
 <!-- Add New Asset Class -->
 <div class="card">
@@ -36,7 +36,7 @@
             {% for ac in asset_classes %}
             <tr>
                 <td><strong>{{ ac.name }}</strong></td>
-                <td style="font-size: 0.9rem; color: #7f8c8d;">
+                <td style="font-size: 0.9rem; color: var(--muted);">
                     {{ ac.targets|length }} targets, 
                     {{ ac.holdings|length }} holdings, 
                     {{ ac.securities|length }} securities
@@ -56,7 +56,7 @@
         </tbody>
     </table>
     {% else %}
-    <p style="color: #7f8c8d;">No asset classes defined yet. Add one above to get started.</p>
+    <p style="color: var(--muted);">No asset classes defined yet. Add one above to get started.</p>
     {% endif %}
 </div>
 

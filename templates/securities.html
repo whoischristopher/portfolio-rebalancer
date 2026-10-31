@@ -3,7 +3,7 @@
 {% block title %}Securities - Portfolio Rebalancer{% endblock %}
 
 {% block content %}
-<h1 style="margin-bottom: 2rem;">Securities & Preferences</h1>
+<h1 style="margin-bottom: 1.5rem;">Securities & Preferences</h1>
 
 <div style="margin-bottom: 1rem;">
     <a href="{{ url_for('add_security') }}" class="btn btn-primary">Add New Security</a>
@@ -26,20 +26,20 @@
         <tbody>
             {% for s in securities %}
             <tr>
-                <td><strong>{{ s.ticker }}</strong>{% if s.is_illiquid %} <span title="Can't be sold on demand – the rebalancer never sells it" style="background:#8e44ad;color:white;padding:0.1rem 0.4rem;border-radius:4px;font-size:0.7rem;">illiquid</span>{% endif %}</td>
+                <td><strong>{{ s.ticker }}</strong>{% if s.is_illiquid %} <span class="badge badge-illiquid" title="Can't be sold on demand – the rebalancer never sells it">illiquid</span>{% endif %}</td>
                 <td>{{ s.name }}</td>
                 <td>{{ s.asset_class.name if s.asset_class else '-' }}</td>
                 <td>{{ s.currency }}</td>
-                <td class="text-right">{% if s.last_price %}${{ "{:,.2f}".format(s.last_price) }}{% else %}<span style="color:#e67e22">none</span>{% endif %}</td>
+                <td class="text-right">{% if s.last_price %}${{ "{:,.2f}".format(s.last_price) }}{% else %}<span style="color:var(--warn)">none</span>{% endif %}</td>
                 <td style="font-size: 0.85rem;">
                     {% set pref = preferences.get(s.id) %}
                     {% if pref %}
                         {% if pref.restriction_type == 'unrestricted' %}
-                            <span class="badge" style="background: #27ae60; color: white; padding: 0.25rem 0.5rem; border-radius: 4px;">Unrestricted</span>
+                            <span class="badge badge-ok">Unrestricted</span>
                         {% elif pref.restriction_type == 'restricted_to_accounts' %}
-                            <span class="badge" style="background: #e74c3c; color: white; padding: 0.25rem 0.5rem; border-radius: 4px;">Restricted</span>
+                            <span class="badge badge-danger">Restricted</span>
                             {% if pref.account_config and pref.account_config.allowed %}
-                                <div style="margin-top: 0.25rem; color: #555; font-size: 0.75rem;">
+                                <div style="margin-top: 0.25rem; color: var(--ink-2); font-size: 0.75rem;">
                                     Only: 
                                     {% for acc_id in pref.account_config.allowed %}
                                         {% set acc = accounts|selectattr('id', 'equalto', acc_id)|first %}
@@ -48,9 +48,9 @@
                                 </div>
                             {% endif %}
                         {% elif pref.restriction_type == 'prioritized_accounts' %}
-                            <span class="badge" style="background: #f39c12; color: white; padding: 0.25rem 0.5rem; border-radius: 4px;">Prioritized</span>
+                            <span class="badge badge-warn">Prioritized</span>
                             {% if pref.account_config %}
-                                <div style="margin-top: 0.25rem; color: #555; font-size: 0.75rem;">
+                                <div style="margin-top: 0.25rem; color: var(--ink-2); font-size: 0.75rem;">
                                     {% if pref.account_config.priority_1 %}
                                         P1: 
                                         {% for acc_id in pref.account_config.priority_1 %}
@@ -62,21 +62,21 @@
                             {% endif %}
                         {% endif %}
                         {% if pref.notes %}
-                            <div style="margin-top: 0.25rem; font-style: italic; color: #7f8c8d; font-size: 0.7rem;">
+                            <div style="margin-top: 0.25rem; font-style: italic; color: var(--muted); font-size: 0.7rem;">
                                 {{ pref.notes[:30] }}{% if pref.notes|length > 30 %}...{% endif %}
                             </div>
                         {% endif %}
                     {% else %}
-                        <span style="color: #95a5a6;">Not set</span>
+                        <span style="color: var(--faint);">Not set</span>
                     {% endif %}
                 </td>
                 <td>
-                    <button class="btn btn-secondary" onclick="openPreferenceModal({{ s.id }}, '{{ s.ticker }}')">
+                    <button class="btn btn-secondary btn-sm" onclick="openPreferenceModal({{ s.id }}, '{{ s.ticker }}')">
                         Set Preference
                     </button>
-                    <a href="{{ url_for('edit_security', security_id=s.id) }}" class="btn btn-warning">Edit</a>
+                    <a href="{{ url_for('edit_security', security_id=s.id) }}" class="btn btn-secondary btn-sm">Edit</a>
                     <form method="POST" action="{{ url_for('delete_security', security_id=s.id) }}" style="display: inline;">
-                        <button type="submit" class="btn btn-danger" onclick="return confirm('Delete {{ s.ticker }}?')">Delete</button>
+                        <button type="submit" class="btn btn-danger btn-sm" onclick="return confirm('Delete {{ s.ticker }}?')">Delete</button>
                     </form>
                 </td>
             </tr>

@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% import "_entry.html" as E with context %}
+{% block title %}Quick start: review – Portfolio Rebalancer{% endblock %}
+
+{% block content %}
+<div class="wizard">
+    <div class="page-head">
+        <div>
+            <h1>{{ 'Ready to rebalance' if status.complete else 'Almost there' }}</h1>
+            <p>{% if status.complete %}Everything the rebalancer needs is in place. Generate a plan to see the trades.{% else %}A couple of things are still missing before a plan can be generated.{% endif %}</p>
+        </div>
+    </div>
+    {{ E.wizard_steps('done', status) }}
+
+    <div class="card">
+        <ul class="checklist">
+            {% for s in status.steps %}
+            <li>
+                <span class="tick {{ 'done' if s.done }}"></span>
+                <span>{% if not s.done %}<a href="{{ url_for('setup_targets' if s.key == 'targets' else ('setup_accounts' if s.key == 'accounts' else 'setup_holdings')) if s.key != 'prices' else url_for('holdings') }}">{{ s.label }}</a>{% else %}{{ s.label }}{% endif %}</span>
+                <span class="detail">{{ s.detail }}</span>
+            </li>
+            {% endfor %}
+        </ul>
+    </div>
+
+    <div class="wizard-foot">
+        <a href="{{ url_for('dashboard') }}" class="btn btn-ghost">Go to dashboard</a>
+        <form method="POST" action="{{ url_for('generate_rebalance') }}">
+            <button type="submit" class="btn btn-primary btn-lg" {% if not status.complete %}disabled{% endif %}>Generate rebalancing plan</button>
+        </form>
+    </div>
+    {% if status.steps[2] and not status.steps[2].done and status.steps[1].done %}
+    <p class="help" style="margin-top: 1rem;">Prices come from your price sheet (Holdings → Update prices), or type one on the security.</p>
+    {% endif %}
+</div>
+{% endblock %}

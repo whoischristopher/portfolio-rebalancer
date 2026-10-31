@@ -1,0 +1,108 @@
+{# Shared data-entry pieces: account rows and the ticker-first holding rows. #}
+
+{% macro account_type_select(name, selected=None, id=None) -%}
+<select name="{{ name }}" {% if id %}id="{{ id }}"{% endif %} data-account-type>
+    <option value="" {% if not selected %}selected{% endif %}>Choose type</option>
+    <optgroup label="Registered">
+        {% for t in registered_account_types %}<option value="{{ t }}" {% if selected == t %}selected{% endif %}>{{ t }}</option>{% endfor %}
+    </optgroup>
+    <optgroup label="Taxable">
+        {% for t in non_registered_account_types %}<option value="{{ t }}" {% if selected == t %}selected{% endif %}>{{ t }}</option>{% endfor %}
+        <option value="Other" {% if selected == 'Other' %}selected{% endif %}>Other</option>
+    </optgroup>
+</select>
+{%- endmacro %}
+
+{% macro currency_select(name, selected='CAD', cls='', id=None) -%}
+<select name="{{ name }}" {% if cls %}class="{{ cls }}"{% endif %} {% if id %}id="{{ id }}"{% endif %}>
+    {% for c in currencies %}<option value="{{ c }}" {% if c == selected %}selected{% endif %}>{{ c }}</option>{% endfor %}
+</select>
+{%- endmacro %}
+
+{% macro account_row(default_currency='CAD') -%}
+<div class="entry-row" data-account-scope>
+    <div class="entry-main">
+        <input type="text" name="a_name[]" placeholder="e.g. Questrade TFSA" aria-label="Account name" autocomplete="off">
+        {{ account_type_select('a_type[]') }}
+        {{ currency_select('a_currency[]', default_currency) }}
+        <label class="check"><input type="checkbox" data-registered> Registered</label>
+        <input type="hidden" name="a_registered[]" value="" data-registered-value>
+        <button type="button" class="btn btn-ghost remove-row" aria-label="Remove row">✕</button>
+    </div>
+</div>
+{%- endmacro %}
+
+{% macro account_rows(default_currency='CAD', start=2) -%}
+<div class="rows accounts" id="account-rows" data-rows>
+    <div class="rows-head"><span>Account name</span><span>Type</span><span>Currency</span><span>Tax status</span><span></span></div>
+    <div class="rows-body">
+        {% for _ in range(start) %}{{ account_row(default_currency) }}{% endfor %}
+    </div>
+    <template>{{ account_row(default_currency) }}</template>
+</div>
+<button type="button" class="btn btn-ghost btn-sm add-row" data-add-row="#account-rows">+ Add another account</button>
+{%- endmacro %}
+
+{% macro holding_row(account_currency='CAD', r=None) -%}
+<div class="entry-row">
+    <div class="entry-main">
+        <input type="text" class="f-ticker" name="h_ticker[]" list="sec-list" placeholder="Ticker"
+               aria-label="Ticker" autocomplete="off" autocapitalize="characters" spellcheck="false" value="{{ r.ticker if r else '' }}">
+        <div class="sec-status" aria-live="polite"></div>
+        <input type="text" class="f-qty" name="h_quantity[]" inputmode="decimal" placeholder="Units" aria-label="Quantity" value="{{ r.quantity if r else '' }}">
+        <input type="text" class="f-bv col-bv" name="h_book_value[]" inputmode="decimal" placeholder="Total cost" aria-label="Book value" value="{{ r.book_value if r else '' }}">
+        <button type="button" class="btn btn-ghost remove-row" aria-label="Remove row">✕</button>
+    </div>
+    <div class="entry-details hidden">
+        <div data-new-only><label>Name</label><input type="text" class="f-name" name="h_name[]" placeholder="e.g. iShares Core Equity ETF Portfolio" value="{{ r.name if r else '' }}"></div>
+        <div data-new-only><label>Asset class</label><input type="text" class="f-ac" name="h_asset_class[]" list="ac-list" placeholder="Pick or type a new one" autocomplete="off" value="{{ r.asset_class if r else '' }}"></div>
+        <div data-new-only><label>Currency</label>{{ currency_select('h_currency[]', (r.currency if r and r.currency else account_currency), 'f-ccy') }}</div>
+        <div><label>Price</label><input type="text" class="f-price" name="h_price[]" inputmode="decimal" placeholder="Optional" value="{{ r.price if r else '' }}"></div>
+        <div class="note"></div>
+    </div>
+</div>
+{%- endmacro %}
+
+{# The ticker-first holdings editor for one account. #}
+{% macro holding_rows(account, securities, asset_classes, prefill=None, start=3, id='holding-rows') -%}
+{% set ccy = account.currency or 'CAD' %}
+<div class="rows holdings {{ 'registered' if account.is_registered }}" id="{{ id }}" data-rows data-currency="{{ ccy }}">
+    <div class="rows-head">
+        <span>Ticker</span><span>Security</span><span>Quantity</span>
+        <span class="col-bv" title="Total adjusted cost base in the security's currency – used to estimate capital gains">Book value (ACB)</span><span></span>
+    </div>
+    <div class="rows-body">
+        {% if prefill %}
+            {% for r in prefill %}{{ holding_row(ccy, r) }}{% endfor %}
+        {% else %}
+            {% for _ in range(start) %}{{ holding_row(ccy) }}{% endfor %}
+        {% endif %}
+    </div>
+    <template>{{ holding_row(ccy) }}</template>
+</div>
+<button type="button" class="btn btn-ghost btn-sm add-row" data-add-row="#{{ id }}">+ Add another holding</button>
+{%- endmacro %}
+
+{% macro entry_datalists(securities, asset_classes) -%}
+<datalist id="sec-list">
+    {% for s in securities %}<option value="{{ s.ticker }}">{{ s.name or '' }}</option>{% endfor %}
+</datalist>
+<datalist id="ac-list">
+    {% for ac in asset_classes %}<option value="{{ ac.name }}"></option>{% endfor %}
+</datalist>
+{%- endmacro %}
+
+{% macro wizard_steps(step, status) -%}
+{% set done = {} %}
+{% for s in status.steps %}{% set _ = done.update({s.key: s.done}) %}{% endfor %}
+<ol class="steps">
+    {% for key, label, endpoint in [('accounts', 'Accounts', 'setup_accounts'), ('holdings', 'Holdings & cash', 'setup_holdings'),
+                                     ('targets', 'Targets', 'setup_targets'), ('done', 'Review', 'setup_done')] %}
+    <li class="{{ 'current' if step == key }} {{ 'done' if done.get(key) or (key == 'done' and status.complete) }}">
+        <a href="{{ url_for(endpoint) }}" {% if step == key %}aria-current="step"{% endif %}>
+            <span class="n">{% if (done.get(key) or (key == 'done' and status.complete)) and step != key %}✓{% else %}{{ loop.index }}{% endif %}</span>{{ label }}
+        </a>
+    </li>
+    {% endfor %}
+</ol>
+{%- endmacro %}

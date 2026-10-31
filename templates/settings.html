@@ -2,12 +2,12 @@
 {% block title %}Settings - Portfolio Rebalancer{% endblock %}
 
 {% block content %}
-<h1 style="margin-bottom: 2rem;">Settings</h1>
+<h1 style="margin-bottom: 1.5rem;">Settings</h1>
 
 <form method="POST" action="{{ url_for('update_settings') }}">
 <div class="card">
     <h2>Portfolio Settings – {{ portfolio.name }}</h2>
-    <p style="color: #7f8c8d; margin-bottom: 1.5rem;">These apply only to the portfolio selected at the top of the page.</p>
+    <p style="color: var(--muted); margin-bottom: 1.5rem;">These apply only to the portfolio selected at the top of the page.</p>
         <div class="form-group">
             <label for="base_currency">Base Currency</label>
             <select id="base_currency" name="base_currency" required>
@@ -19,7 +19,7 @@
             <label for="trade_cost">Trading Cost per Trade ({{ portfolio.base_currency }})</label>
             <input type="number" step="0.01" min="0" id="trade_cost" name="trade_cost"
                    value="{{ '%.2f'|format(portfolio.trade_cost or 0) }}">
-            <small style="color: #7f8c8d;">Commission per buy or sell. Even at $0 the rebalancer still keeps the number of trades low.</small>
+            <small style="color: var(--muted);">Commission per buy or sell. Even at $0 the rebalancer still keeps the number of trades low.</small>
         </div>
         <div class="form-group">
             <label for="taxable_sell_mode">Selling in Non-Registered Accounts</label>
@@ -28,7 +28,7 @@
                 <option value="never" {% if portfolio.taxable_sell_mode == 'never' %}selected{% endif %}>Never</option>
                 <option value="allow" {% if portfolio.taxable_sell_mode == 'allow' %}selected{% endif %}>Allow (minimise realised gains)</option>
             </select>
-            <small style="color: #7f8c8d;">
+            <small style="color: var(--muted);">
                 <em>Ask</em> plans using cash and registered accounts only, and, if something is still outside its band,
                 shows what selling in a non-registered account would fix and the capital gain it would realise.
                 Gains are estimated from each holding's book value (set it on the Holdings page).
@@ -42,7 +42,7 @@
                    name="balanced_threshold" 
                    value="{{ portfolio.balanced_threshold if portfolio.balanced_threshold is not none else 0.5 }}"
                    required>
-            <small style="color: #7f8c8d;">Asset classes within this % of target are considered "balanced" (default: 0.5%)</small>
+            <small style="color: var(--muted);">Asset classes within this % of target are considered "balanced" (default: 0.5%)</small>
         </div>
         <div class="form-group">
             <label>
@@ -63,7 +63,7 @@
                 <option value="{{ p.id }}" {% if portfolio.sl_link_portfolio_id == p.id %}selected{% endif %}>Also check trades recorded in "{{ p.name }}"</option>
                 {% endfor %}
             </select>
-            <small style="color: #7f8c8d;">
+            <small style="color: var(--muted);">
                 The superficial-loss rule also applies to purchases by an affiliated person – notably your spouse or
                 common-law partner (including their RRSP/TFSA). If the other portfolio belongs to such a person, link it here
                 so a loss sale here isn't paired with a buy of the same ticker there within 30 days (and vice versa – set it in
@@ -74,7 +74,7 @@
 
 <div class="card">
     <h2>Login Settings</h2>
-    <p style="color: #7f8c8d; margin-bottom: 1.5rem;">Shared by all your portfolios.</p>
+    <p style="color: var(--muted); margin-bottom: 1.5rem;">Shared by all your portfolios.</p>
         <div class="form-group">
             <label for="price_sheet_id">Price Lookup Sheet ID</label>
             <input type="text" 
@@ -82,7 +82,7 @@
                    name="price_sheet_id" 
                    value="{{ user.price_sheet_id or '' }}" 
                    placeholder="e.g., 1aBcDeFgHiJkLmNoPqRsTuVwXyZ123456789">
-            <small style="display: block; margin-top: 0.5rem; color: #7f8c8d;">
+            <small style="display: block; margin-top: 0.5rem; color: var(--muted);">
                 Create a Google Sheet with tickers in column A (e.g., <code>TSE:XEC</code> or <code>NYSEARCA:ITOT</code>; the
                 exchange prefix is ignored when matching your securities) and
                 <code>=GOOGLEFINANCE(A2,"price")</code> formulas in column B. The first tab is read. 

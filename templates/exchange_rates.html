@@ -2,7 +2,7 @@
 {% block title %}Exchange Rates - Portfolio Rebalancer{% endblock %}
 
 {% block content %}
-<h1 style="margin-bottom: 2rem;">Exchange Rates</h1>
+<h1 style="margin-bottom: 1.5rem;">Exchange Rates</h1>
 
 <div class="card">
     <h2>Update or Add Rates</h2>
@@ -54,7 +54,7 @@
         </tbody>
     </table>
     {% else %}
-    <p style="color: #7f8c8d;">No exchange rates found. Use the “Fetch Latest Rates” button to pull data.</p>
+    <p style="color: var(--muted);">No exchange rates found. Use the “Fetch Latest Rates” button to pull data.</p>
     {% endif %}
 </div>
 {% endblock %}

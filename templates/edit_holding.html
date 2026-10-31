@@ -1,69 +1,60 @@
 {% extends "base.html" %}
-{% block title %}Edit Holding{% endblock %}
+{% block title %}Edit holding – Portfolio Rebalancer{% endblock %}
 {% block content %}
-<h1>Edit Holding</h1>
+<div class="page-head">
+  <div>
+    <h1>Edit {{ holding.security.ticker }} in {{ holding.account.name }}</h1>
+    <p>Asset class, currency and name belong to the security – <a href="{{ url_for('edit_security', security_id=holding.security_id) }}">edit {{ holding.security.ticker }}</a> to change them.</p>
+  </div>
+</div>
 
+<div class="card" style="max-width: 720px;">
 <form method="POST">
-  <div class="form-group">
-    <label for="account_id">Account</label>
-    <select id="account_id" name="account_id" class="form-control">
-      {% for account in accounts %}
-        <option value="{{ account.id }}" {% if account.id == holding.account_id %}selected{% endif %}>
-          {{ account.name }}
-        </option>
-      {% endfor %}
-    </select>
-  </div>
-
-  <div class="form-group">
-    <label for="security_id">Security</label>
-    <select id="security_id" name="security_id" class="form-control">
-      <option value="">None</option>
-      {% for s in securities %}
-        <option value="{{ s.id }}" {% if s.id == holding.security_id %}selected{% endif %}>
-          {{ s.ticker }} - {{ s.name }}
-        </option>
-      {% endfor %}
-    </select>
-  </div>
-
-  <div class="form-group">
-    <label for="quantity">Quantity</label>
-    <input type="number" step="0.001" id="quantity" name="quantity" value="{{ holding.quantity }}" class="form-control">
-  </div>
-
-  <div class="form-group">
-    <label for="price">Price <small style="color:#7f8c8d">(changes it for every holding of this security)</small></label>
-    <input type="number" step="0.0001" id="price" name="price" value="{{ holding.price }}" class="form-control">
-  </div>
-
-  <div class="form-group">
-    <label for="book_value">Book Value / ACB (total, in {{ holding.security.currency }})</label>
-    <input type="number" step="0.01" id="book_value" name="book_value"
-           value="{{ '%.2f'|format(holding.book_value) if holding.book_value is not none else '' }}" class="form-control"
-           placeholder="Leave blank if unknown">
-    <small style="color: #7f8c8d;">Needed for non-registered accounts so the rebalancer can estimate capital gains. Same currency as the price – e.g. USD for a USD-listed ETF.</small>
-  </div>
-
-  <div class="form-group">
-    <label for="asset_class">Asset Class</label>
-      <select id="asset_class_id" name="asset_class_id" class="form-control">
-        {% for ac in asset_classes %}
-          <option value="{{ ac.id }}" {% if holding.asset_class_id == ac.id %}selected{% endif %}>
-            {{ ac.name }}
-          </option>
+  <div class="field-grid" style="grid-template-columns: 1fr 1fr;">
+    <div class="form-group">
+      <label for="account_id">Account</label>
+      <select id="account_id" name="account_id">
+        {% for account in accounts %}
+          <option value="{{ account.id }}" {% if account.id == holding.account_id %}selected{% endif %}>{{ account.name }}</option>
         {% endfor %}
       </select>
+    </div>
+    <div class="form-group">
+      <label for="security_id">Security</label>
+      <select id="security_id" name="security_id">
+        {% for s in securities %}
+          <option value="{{ s.id }}" {% if s.id == holding.security_id %}selected{% endif %}>{{ s.ticker }}{% if s.name %} – {{ s.name }}{% endif %}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="form-group">
+      <label for="quantity">Quantity</label>
+      <input type="number" step="any" id="quantity" name="quantity" value="{{ holding.quantity }}">
+    </div>
+    <div class="form-group">
+      <label for="price">Price ({{ holding.security.currency }})</label>
+      <input type="number" step="0.0001" id="price" name="price" value="{{ holding.price }}">
+    </div>
+  </div>
+  <p class="help" style="margin: -0.5rem 0 1rem;">Changing the price changes it for every holding of this security.</p>
 
+  <div class="form-group">
+    <label for="book_value">Book value / ACB (total, {{ holding.security.currency }})</label>
+    <input type="number" step="0.01" id="book_value" name="book_value"
+           value="{{ '%.2f'|format(holding.book_value) if holding.book_value is not none else '' }}"
+           placeholder="Leave blank if unknown">
+    <small>{% if holding.account.is_registered %}Not needed in a registered account.{% else %}Used to estimate capital gains when selling in this taxable account. Same currency as the price.{% endif %}</small>
   </div>
 
   <div class="form-group">
     <label for="notes">Notes</label>
-    <textarea id="notes" name="notes" class="form-control">{{ holding.notes or '' }}</textarea>
+    <textarea id="notes" name="notes" rows="2" style="width: 100%;">{{ holding.notes or '' }}</textarea>
   </div>
 
-  <button type="submit" class="btn btn-success">Save Changes</button>
-  <a href="{{ url_for('holdings') }}" class="btn btn-secondary">Cancel</a>
+  <div class="btn-row">
+    <button type="submit" class="btn btn-primary">Save holding</button>
+    <a href="{{ url_for('holdings') }}#account-{{ holding.account_id }}" class="btn btn-ghost">Cancel</a>
+  </div>
 </form>
+</div>
 {% endblock %}
-

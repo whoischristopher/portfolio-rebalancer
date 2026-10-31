@@ -40,6 +40,19 @@ Always respected:
   Recorded requests are left out of planning until you mark them received (units, ACB, cash, gain updated)
 - Optional fractional final buy per account to use up leftover cash, without pushing a class past its band
 
+Getting data in:
+- Quick start (sidebar, and the dashboard checklist until setup is complete) walks through accounts → holdings & cash,
+  one account at a time → target mix → a first plan. Each step saves as you go; it can be re-run any time to add more.
+  New portfolios open straight into it.
+- Holdings are entered by ticker, several rows at once. A ticker already in the portfolio is recognised (also with
+  exchange prefixes/suffixes, e.g. XIC.TO → XIC); a new one asks for name, asset class (type a new name to create the
+  class), currency and optional price, pre-filled from your other portfolios when the same ticker exists there.
+  Entering a ticker you already hold in that account tops up the position (quantities and book values add).
+  A batch with a bad row is rejected as a whole, so nothing is half-saved.
+- Account types: choosing a registered type (RRSP, Spousal RRSP, TFSA, FHSA, RESP, RDSP, LIRA, LIF, RRIF) marks the
+  account registered; Non-Registered and Corporate are always taxable; "Other" leaves the checkbox to you.
+  Accounts can now be edited (name, type, currency, tax status) on the Accounts page.
+
 Multiple portfolios (e.g. yours and your spouse's) under one login:
 - Pick the active portfolio from the selector at the top of every page; manage them under "Manage portfolios…".
 - Each portfolio is fully separate: its own accounts, securities, asset classes, targets, holdings/book values,

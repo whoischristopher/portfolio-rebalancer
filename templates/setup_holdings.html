@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+{% import "_entry.html" as E with context %}
+{% block title %}Quick start: holdings – Portfolio Rebalancer{% endblock %}
+
+{% block content %}
+<div class="wizard">
+    <div class="page-head">
+        <div>
+            <h1>What's in each account</h1>
+            <p>Type a ticker. If it's one you've used before it's picked up automatically; a new one just needs a name and an asset class, right here.</p>
+        </div>
+    </div>
+    {{ E.wizard_steps('holdings', status) }}
+
+    <nav class="account-tabs" aria-label="Accounts">
+        {% for a in accounts %}
+        <a href="{{ url_for('setup_holdings', account_id=a.id) }}" class="{{ 'current' if a.id == account.id }}">
+            {{ a.name }}<span class="count">{{ a.holdings|length }}</span>
+        </a>
+        {% endfor %}
+        <a href="{{ url_for('setup_accounts') }}">+ Account</a>
+    </nav>
+
+    {% set prefill = none %}
+    {% if posted %}
+        {% set prefill = [] %}
+        {% set tk = posted.getlist('h_ticker[]') %}
+        {% for i in range(tk|length) %}
+            {% set _ = prefill.append({'ticker': tk[i], 'quantity': posted.getlist('h_quantity[]')[i],
+                'book_value': posted.getlist('h_book_value[]')[i], 'price': posted.getlist('h_price[]')[i],
+                'name': posted.getlist('h_name[]')[i], 'asset_class': posted.getlist('h_asset_class[]')[i],
+                'currency': posted.getlist('h_currency[]')[i]}) %}
+        {% endfor %}
+    {% endif %}
+
+    <form method="POST" action="{{ url_for('setup_holdings', account_id=account.id) }}">
+        <div class="card">
+            <div class="card-head">
+                <div>
+                    <h2>{{ account.name }}</h2>
+                    <div class="account-meta">
+                        {{ account.account_type or 'Account' }}, {{ account.currency }},
+                        {% if account.is_registered %}registered – no book value needed{% else %}taxable – book value is used to estimate capital gains{% endif %}
+                    </div>
+                </div>
+            </div>
+
+            <div class="cash-line">
+                <label for="cash_balance">Cash in this account</label>
+                <input type="text" inputmode="decimal" id="cash_balance" name="cash_balance"
+                       value="{{ posted.cash_balance if posted else ('%.2f'|format(account.cash_balance) if account.cash_balance else '') }}" placeholder="0.00">
+                <span class="muted">{{ account.currency }}</span>
+            </div>
+
+            {% if account.holdings %}
+            <h3>Already entered</h3>
+            <table style="margin-bottom: 1.5rem;">
+                <thead><tr><th>Security</th><th>Asset class</th><th class="text-right">Quantity</th><th class="text-right">Price</th>
+                    {% if not account.is_registered %}<th class="text-right">Book value</th>{% endif %}</tr></thead>
+                <tbody>
+                {% for h in account.holdings|sort(attribute='security.ticker') %}
+                <tr>
+                    <td><strong>{{ h.security.ticker }}</strong><span class="sub">{{ h.security.name or '' }}</span></td>
+                    <td>{{ h.security.asset_class.name if h.security.asset_class else '—' }}</td>
+                    <td class="text-right num">{{ '{:,.4f}'.format(h.quantity).rstrip('0').rstrip('.') }}</td>
+                    <td class="text-right num">{% if h.security.last_price %}{{ h.security.currency }} {{ '{:,.2f}'.format(h.security.last_price) }}{% else %}<span class="badge badge-warn">no price</span>{% endif %}</td>
+                    {% if not account.is_registered %}<td class="text-right num">{% if h.book_value is not none %}{{ '{:,.2f}'.format(h.book_value) }}{% else %}<span class="badge badge-warn">missing</span>{% endif %}</td>{% endif %}
+                </tr>
+                {% endfor %}
+                </tbody>
+            </table>
+            <h3>Add more</h3>
+            <p class="help" style="margin: 0 0 0.75rem;">Entering a ticker you already hold here adds to that position.</p>
+            {% endif %}
+
+            {{ E.entry_datalists(securities, asset_classes) }}
+            {{ E.holding_rows(account, securities, asset_classes, prefill, 1 if account.holdings else 3) }}
+        </div>
+
+        <div class="wizard-foot">
+            <a href="{{ url_for('setup_accounts') }}" class="btn btn-ghost">Back to accounts</a>
+            <div class="btn-row">
+                <button type="submit" name="next" value="stay" class="btn btn-secondary">Save</button>
+                <button type="submit" name="next" value="next" class="btn btn-primary">
+                    {% if next_account %}Save and go to {{ next_account.name }}{% else %}Save and set targets{% endif %}
+                </button>
+            </div>
+        </div>
+    </form>
+</div>
+{% endblock %}

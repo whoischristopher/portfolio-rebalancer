@@ -43,6 +43,10 @@ from services.prices import (
     same_security_elsewhere,
 )
 from rebalancer import generate_plan
+from services.entry import (
+    ACCOUNT_TYPES, CURRENCIES, NON_REGISTERED_ACCOUNT_TYPES, REGISTERED_ACCOUNT_TYPES, EntryError, lookup_elsewhere, parse_amount,
+    parse_holding_rows, registered_flag, save_holding_rows, find_security, suggest_currency, upsert_holding,
+)
 from services.fx import convert_to_base
 
 for handler in logging.root.handlers[:]:
@@ -129,7 +133,35 @@ def _inject_portfolios():
     if not current_user.is_authenticated:
         return {}
     return {'active_portfolio': current_portfolio(),
-            'all_portfolios': Portfolio.query.filter_by(user_id=current_user.id).order_by(Portfolio.id).all()}
+            'all_portfolios': Portfolio.query.filter_by(user_id=current_user.id).order_by(Portfolio.id).all(),
+            'account_types': ACCOUNT_TYPES,
+            'registered_account_types': REGISTERED_ACCOUNT_TYPES,
+            'non_registered_account_types': NON_REGISTERED_ACCOUNT_TYPES,
+            'currencies': CURRENCIES,
+            'nav_setup': setup_status(current_portfolio())}
+
+
+def setup_status(P):
+    """What's still missing before a plan can be generated – drives the dashboard
+    checklist and the quick-start wizard."""
+    accounts = Account.query.filter_by(portfolio_id=P.id).all()
+    holdings = [h for a in accounts for h in a.holdings]
+    targets = Target.query.filter_by(portfolio_id=P.id).all()
+    total_target = sum(t.target_percentage for t in targets)
+    unpriced = sorted({h.security.ticker for h in holdings if not (h.security and h.security.last_price)})
+    steps = [
+        {'key': 'accounts', 'label': 'Add your accounts', 'done': bool(accounts),
+         'detail': f'{len(accounts)} account{"s" if len(accounts) != 1 else ""}'},
+        {'key': 'holdings', 'label': 'Enter holdings and cash', 'done': bool(holdings) or
+         any((a.cash_balance or 0) > 0 for a in accounts),
+         'detail': f'{len(holdings)} holding{"s" if len(holdings) != 1 else ""}'},
+        {'key': 'prices', 'label': 'Price every security', 'done': bool(holdings) and not unpriced,
+         'detail': ('Missing: ' + ', '.join(unpriced[:6])) if unpriced else 'All priced'},
+        {'key': 'targets', 'label': 'Set target allocation', 'done': bool(targets) and abs(total_target - 100) < 0.01,
+         'detail': f'Targets add up to {total_target:g}%'},
+    ]
+    return {'steps': steps, 'complete': all(s['done'] for s in steps),
+            'done_count': sum(s['done'] for s in steps)}
 
 
 # ---------------------------------------------------------------------------
@@ -160,6 +192,13 @@ def dashboard():
         allocation_pct=allocation_pct,
         exchange_rates=exchange_rates,
         base_currency=P.base_currency,
+        status=setup_status(P),
+        allocation_rows=sorted([
+            {'name': t.asset_class.name, 'current': allocation_pct.get(t.asset_class_id, 0.0),
+             'target': t.target_percentage, 'value': allocation.get(t.asset_class_id, 0.0)}
+            for t in targets], key=lambda r: -r['target']),
+        band=P.balanced_threshold if P.balanced_threshold is not None else 0.5,
+        plan=_plan_summary(),
     )
 
 
@@ -183,13 +222,30 @@ def add_account():
         user_id=current_user.id,
         portfolio_id=current_portfolio().id,
         name=name,
-        account_type=request.form.get('account_type'),
+        account_type=request.form.get('account_type') or None,
         currency=request.form.get('currency', 'CAD'),
-        is_registered=request.form.get('is_registered') == 'on',
+        is_registered=registered_flag(request.form.get('account_type'), request.form.get('is_registered')),
     )
     db.session.add(account)
     db.session.commit()
-    flash(f'Account "{name}" added successfully', 'success')
+    flash(f'Account "{name}" added.', 'success')
+    return redirect(url_for('accounts'))
+
+
+@app.route('/accounts/<int:account_id>/edit', methods=['POST'])
+@login_required
+def edit_account(account_id):
+    account = _get(Account, account_id)
+    name = request.form.get('name', '').strip()
+    if not name:
+        flash('Account name is required', 'error')
+        return redirect(url_for('accounts'))
+    account.name = name
+    account.account_type = request.form.get('account_type') or None
+    account.currency = request.form.get('currency', account.currency or 'CAD')
+    account.is_registered = registered_flag(account.account_type, request.form.get('is_registered'))
+    db.session.commit()
+    flash(f'Account "{name}" saved.', 'success')
     return redirect(url_for('accounts'))
 
 
@@ -239,42 +295,60 @@ def holdings():
         holdings=all_holdings,
         accounts=_p_accounts(),
         exchange_rates=exchange_rates,
-        base_currency=P.base_currency,
-        asset_classes=_p_asset_classes(),
-        securities=_p_securities(),
+        **_entry_context(),
     )
 
 
 @app.route('/holdings/add', methods=['POST'])
 @login_required
 def add_holding():
+    """Add holdings to one account. Rows are entered by ticker; a ticker that isn't a
+    security yet is created on the spot (with its asset class if that's new too).
+    The older single-holding form (security_id + quantity) is still accepted."""
+    P = current_portfolio()
     account_id = request.form.get('account_id')
-    security_id = request.form.get('security_id')
-    quantity = request.form.get('quantity')
-    price = request.form.get('price')
-    if not all([account_id, security_id, quantity]):
-        flash('Account, security, and quantity are required', 'error')
+    if not account_id:
+        flash('Choose an account first.', 'error')
         return redirect(url_for('holdings'))
     account = _get(Account, account_id)
-    security = _get(Security, security_id)
-    book_value = request.form.get('book_value')
-    if price:
-        set_security_price(security, float(price))     # a typed price becomes the security's price
-    holding = Holding(
-        account_id=account.id,
-        security_id=security.id,
-        quantity=float(quantity),
-        price=security.last_price or 0.0,
-        book_value=float(book_value) if book_value else None,
-    )
-    db.session.add(holding)
-    db.session.commit()
-    if security.last_price:
-        flash(f'Holding {security.ticker} added successfully', 'success')
+    if 'h_ticker[]' in request.form:
+        rows = parse_holding_rows(request.form, 'h')
     else:
-        flash(f'Holding {security.ticker} added, but it has no price yet – run "Update Prices" '
-              f'or set a price on the security.', 'warning')
-    return redirect(url_for('holdings'))
+        security_id = request.form.get('security_id')
+        if not (security_id and request.form.get('quantity')):
+            flash('Account, security, and quantity are required', 'error')
+            return redirect(url_for('holdings'))
+        sec = _get(Security, security_id)
+        rows = [{'row': 1, 'ticker': sec.ticker, 'quantity': request.form.get('quantity', ''),
+                 'book_value': request.form.get('book_value', ''), 'price': request.form.get('price', ''),
+                 'name': '', 'asset_class': '', 'currency': ''}]
+    if not rows:
+        flash('Enter at least one holding.', 'error')
+        return redirect(url_for('holdings'))
+    try:
+        summary = save_holding_rows(P, account, rows)
+        db.session.commit()
+    except EntryError as exc:
+        db.session.rollback()
+        flash(str(exc), 'error')
+        return redirect(url_for('holdings'))
+    _flash_holding_summary(account, summary)
+    return redirect(url_for('holdings') + f'#account-{account.id}')
+
+
+def _flash_holding_summary(account, summary):
+    parts = []
+    if summary['added']:
+        parts.append(f"added {summary['added']} holding{'s' if summary['added'] != 1 else ''}")
+    if summary['merged']:
+        parts.append(f"topped up {summary['merged']} existing")
+    msg = f'{account.name}: ' + ' and '.join(parts) + '.'
+    if summary['new_securities']:
+        msg += ' New securities: ' + ', '.join(summary['new_securities']) + '.'
+    flash(msg, 'success')
+    if summary['unpriced']:
+        flash('No price yet for ' + ', '.join(sorted(set(summary['unpriced']))) +
+              ' – run "Update prices" or type a price on the security.', 'warning')
 
 
 @app.route('/holdings/<int:holding_id>/edit', methods=['GET', 'POST'])
@@ -341,6 +415,197 @@ def update_prices():
     if unmatched:
         flash('Sheet tickers not matching any security: ' + ', '.join(sorted(unmatched)[:15]), 'warning')
     return redirect(url_for('holdings'))
+
+
+# ---------------------------------------------------------------------------
+# Routes – Quick start wizard
+# ---------------------------------------------------------------------------
+# Accounts → holdings & cash (one account at a time, securities created inline)
+# → targets → done. Every step saves as it goes, so leaving half-way loses nothing,
+# and the wizard can be re-run any time to add more.
+def _entry_context():
+    P = current_portfolio()
+    secs = _p_securities()
+    return {
+        'securities': secs,
+        'asset_classes': _p_asset_classes(),
+        'known_securities': {s.ticker.upper(): {'ticker': s.ticker, 'name': s.name or '', 'currency': s.currency,
+                                                'asset_class': s.asset_class.name if s.asset_class else '',
+                                                'price': s.last_price} for s in secs},
+        'base_currency': P.base_currency or 'CAD',
+    }
+
+
+@app.route('/setup')
+@login_required
+def setup():
+    status = setup_status(current_portfolio())
+    first_open = next((st['key'] for st in status['steps'] if not st['done']), None)
+    if first_open == 'accounts':
+        return redirect(url_for('setup_accounts'))
+    if first_open in ('holdings', 'prices'):
+        return redirect(url_for('setup_holdings'))
+    if first_open == 'targets':
+        return redirect(url_for('setup_targets'))
+    return redirect(url_for('setup_done'))
+
+
+@app.route('/setup/accounts', methods=['GET', 'POST'])
+@login_required
+def setup_accounts():
+    P = current_portfolio()
+    if request.method == 'POST':
+        names = request.form.getlist('a_name[]')
+        types = request.form.getlist('a_type[]')
+        ccys = request.form.getlist('a_currency[]')
+        regs = request.form.getlist('a_registered[]')
+        created = []
+        for i, name in enumerate(names):
+            name = name.strip()
+            if not name:
+                continue
+            atype = (types[i] if i < len(types) else '') or None
+            ccy = ccys[i] if i < len(ccys) and ccys[i] in CURRENCIES else (P.base_currency or 'CAD')
+            acc = Account(user_id=current_user.id, portfolio_id=P.id, name=name, account_type=atype, currency=ccy,
+                          is_registered=registered_flag(atype, regs[i] if i < len(regs) else ''))
+            db.session.add(acc)
+            created.append(acc)
+        db.session.commit()
+        if created:
+            flash(f'Added {len(created)} account{"s" if len(created) != 1 else ""}: '
+                  + ', '.join(a.name for a in created) + '.', 'success')
+        if not _p_accounts():
+            flash('Add at least one account to continue.', 'error')
+            return redirect(url_for('setup_accounts'))
+        if request.form.get('next') == 'stay':
+            return redirect(url_for('setup_accounts'))
+        return redirect(url_for('setup_holdings'))   # first account that's still empty
+    return render_template('setup_accounts.html', step='accounts', accounts=_p_accounts(),
+                           status=setup_status(P))
+
+
+@app.route('/setup/holdings', methods=['GET'])
+@app.route('/setup/holdings/<int:account_id>', methods=['GET', 'POST'])
+@login_required
+def setup_holdings(account_id=None):
+    P = current_portfolio()
+    account = _get(Account, account_id) if account_id is not None else None
+    accounts = _p_accounts()
+    if not accounts:
+        return redirect(url_for('setup_accounts'))
+    if account is None:
+        empty = next((a for a in accounts if not a.holdings), accounts[0])
+        return redirect(url_for('setup_holdings', account_id=empty.id))
+    # Next: the following account in the list, else any earlier one that's still empty.
+    idx = [a.id for a in accounts].index(account.id)
+    nxt = accounts[idx + 1] if idx + 1 < len(accounts) else next(
+        (a for a in accounts[:idx] if not a.holdings and not a.cash_balance), None)
+    if request.method == 'POST':
+        try:
+            cash = parse_amount(request.form.get('cash_balance'), 'Cash balance')
+            rows = parse_holding_rows(request.form, 'h')
+            summary = save_holding_rows(P, account, rows) if rows else None
+            if cash is not None:
+                account.cash_balance = cash
+            db.session.commit()
+        except EntryError as exc:
+            db.session.rollback()
+            flash(str(exc), 'error')
+            return render_template('setup_holdings.html', step='holdings', account=account, accounts=accounts,
+                                   next_account=nxt, status=setup_status(P), posted=request.form,
+                                   **_entry_context())
+        if summary:
+            _flash_holding_summary(account, summary)
+        if request.form.get('next') == 'stay':
+            return redirect(url_for('setup_holdings', account_id=account.id))
+        if nxt:
+            return redirect(url_for('setup_holdings', account_id=nxt.id))
+        return redirect(url_for('setup_targets'))
+    return render_template('setup_holdings.html', step='holdings', account=account, accounts=accounts,
+                           next_account=nxt, status=setup_status(P), posted=None, **_entry_context())
+
+
+@app.route('/setup/targets', methods=['GET', 'POST'])
+@login_required
+def setup_targets():
+    P = current_portfolio()
+    if request.method == 'POST':
+        existing = {t.asset_class_id: t for t in Target.query.filter_by(portfolio_id=P.id).all()}
+        try:
+            for ac in _p_asset_classes():
+                raw = request.form.get(f't_{ac.id}')
+                if raw is None:
+                    continue
+                pct = parse_amount(raw, f'Target for {ac.name}', minimum=0)
+                t = existing.get(ac.id)
+                if pct is None:
+                    if t:
+                        db.session.delete(t)
+                elif t:
+                    t.target_percentage = pct
+                else:
+                    db.session.add(Target(user_id=current_user.id, portfolio_id=P.id, asset_class_id=ac.id,
+                                          target_percentage=pct))
+            for name, raw in zip(request.form.getlist('new_ac_name[]'), request.form.getlist('new_ac_pct[]')):
+                if not name.strip():
+                    continue
+                from services.entry import find_or_create_asset_class
+                ac = find_or_create_asset_class(P, name)
+                pct = parse_amount(raw, f'Target for {ac.name}', minimum=0) or 0.0
+                t = Target.query.filter_by(portfolio_id=P.id, asset_class_id=ac.id).first()
+                if t:
+                    t.target_percentage = pct
+                else:
+                    db.session.add(Target(user_id=current_user.id, portfolio_id=P.id, asset_class_id=ac.id,
+                                          target_percentage=pct))
+            db.session.commit()
+        except EntryError as exc:
+            db.session.rollback()
+            flash(str(exc), 'error')
+            return redirect(url_for('setup_targets'))
+        total = sum(t.target_percentage for t in Target.query.filter_by(portfolio_id=P.id).all())
+        if abs(total - 100) > 0.01:
+            flash(f'Targets saved, but they add up to {total:g}% – they need to total 100% before you rebalance.',
+                  'warning')
+            return redirect(url_for('setup_targets'))
+        flash('Targets saved.', 'success')
+        return redirect(url_for('setup_done'))
+    fx = get_exchange_rates(P)
+    _, alloc_pct, total_value = calculate_portfolio_allocation(P, fx)
+    targets = {t.asset_class_id: t.target_percentage for t in Target.query.filter_by(portfolio_id=P.id).all()}
+    rows = [{'ac': ac, 'current': alloc_pct.get(ac.id, 0.0), 'target': targets.get(ac.id)}
+            for ac in _p_asset_classes()]
+    rows.sort(key=lambda r: -r['current'])
+    return render_template('setup_targets.html', step='targets', rows=rows, total_value=total_value,
+                           base_currency=P.base_currency, status=setup_status(P))
+
+
+@app.route('/setup/done')
+@login_required
+def setup_done():
+    P = current_portfolio()
+    return render_template('setup_done.html', step='done', status=setup_status(P), accounts=_p_accounts())
+
+
+@app.route('/api/securities/lookup')
+@login_required
+def api_security_lookup():
+    """Is this ticker already a security here? If not, what do your other portfolios
+    know about it? Used to pre-fill the new-security fields while entering holdings."""
+    P = current_portfolio()
+    ticker = (request.args.get('ticker') or '').strip()
+    if not ticker:
+        return jsonify({'found': None})
+    sec = find_security(P, ticker)
+    where = 'here'
+    if sec is None:
+        sec = lookup_elsewhere(current_user.id, ticker)
+        where = 'elsewhere'
+    if sec is None:
+        return jsonify({'found': None, 'currency': suggest_currency(ticker, request.args.get('currency') or
+                                                                   P.base_currency or 'CAD')})
+    return jsonify({'found': where, 'ticker': sec.ticker, 'name': sec.name or '', 'currency': sec.currency,
+                    'asset_class': sec.asset_class.name if sec.asset_class else '', 'price': sec.last_price})
 
 
 # ---------------------------------------------------------------------------
@@ -434,7 +699,7 @@ def add_security():
     P = current_portfolio()
     if request.method == 'POST':
         ticker = request.form.get('ticker', '').strip()
-        asset_class_id = request.form.get('asset_class_id')
+        asset_class_id = _asset_class_from_form()
         if not ticker:
             flash('Ticker is required', 'error')
         elif not asset_class_id:
@@ -446,7 +711,7 @@ def add_security():
                 portfolio_id=P.id,
                 ticker=ticker,
                 name=request.form.get('name'),
-                asset_class_id=_get(AssetClass, asset_class_id).id,
+                asset_class_id=asset_class_id,
                 currency=request.form.get('currency', 'CAD'),
                 is_public=request.form.get('is_public') == 'on',
                 auto_update_price=request.form.get('auto_update_price') == 'on',
@@ -462,6 +727,17 @@ def add_security():
             flash(f'Security {ticker} added.', 'success')
             return redirect(url_for('securities'))
     return render_template('add_security.html', asset_classes=_p_asset_classes())
+
+
+def _asset_class_from_form():
+    """Asset class id from a form that offers both a list (asset_class_id) and a
+    free-text name (asset_class_name, creates the class if it's new)."""
+    name = (request.form.get('asset_class_name') or '').strip()
+    if name:
+        from services.entry import find_or_create_asset_class
+        return find_or_create_asset_class(current_portfolio(), name).id
+    ac_id = request.form.get('asset_class_id')
+    return _get(AssetClass, ac_id).id if ac_id else None
 
 
 def _ticker_taken(portfolio_id, ticker, exclude_id=None):
@@ -483,7 +759,7 @@ def edit_security(security_id):
             return redirect(url_for('edit_security', security_id=security.id))
         security.ticker = ticker
         security.name = request.form.get('name')
-        security.asset_class_id = _get(AssetClass, request.form.get('asset_class_id')).id
+        security.asset_class_id = _asset_class_from_form() or security.asset_class_id
         security.currency = request.form.get('currency', 'CAD')
         security.is_public = request.form.get('is_public') == 'on'
         security.auto_update_price = request.form.get('auto_update_price') == 'on'
@@ -909,7 +1185,7 @@ def update_settings():
 # Pages that make sense in any portfolio; after switching we return to one of these
 # (a page about a specific holding/security would 404 in the other portfolio).
 _SWITCH_SAFE_PATHS = {'/dashboard', '/accounts', '/holdings', '/targets', '/securities',
-                      '/rebalance', '/settings', '/portfolios'}
+                      '/rebalance', '/settings', '/portfolios', '/setup/accounts', '/setup/targets'}
 
 
 def _owned_portfolio(portfolio_id):
@@ -949,7 +1225,7 @@ def add_portfolio():
     flash(f'Portfolio "{name}" created and selected.'
           + (' Asset classes, securities and targets were copied – it has no accounts or holdings yet.'
              if request.form.get('copy_setup') == 'on' else ''), 'success')
-    return redirect(url_for('accounts'))
+    return redirect(url_for('setup_accounts'))
 
 
 def _copy_setup(src, dst):

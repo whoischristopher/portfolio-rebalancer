@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% import "_entry.html" as E with context %}
+{% block title %}Quick start: targets – Portfolio Rebalancer{% endblock %}
+
+{% block content %}
+<div class="wizard">
+    <div class="page-head">
+        <div>
+            <h1>Your target mix</h1>
+            <p>Set what share of the whole portfolio each asset class should be. Your current mix is shown for reference; targets must add up to 100%.</p>
+        </div>
+    </div>
+    {{ E.wizard_steps('targets', status) }}
+
+    <form method="POST" action="{{ url_for('setup_targets') }}">
+        <div class="card flush">
+            <div class="card-head">
+                <h2>Asset classes</h2>
+                <span class="card-sub">Portfolio value {{ base_currency }} {{ '{:,.0f}'.format(total_value) }}</span>
+            </div>
+            <table>
+                <thead><tr><th>Asset class</th><th class="text-right">Now</th><th class="text-right">Target</th></tr></thead>
+                <tbody>
+                {% for r in rows %}
+                <tr class="target-row">
+                    <td><strong>{{ r.ac.name }}</strong></td>
+                    <td class="text-right num muted">{{ '%.1f'|format(r.current) }}%</td>
+                    <td class="text-right"><input type="text" inputmode="decimal" name="t_{{ r.ac.id }}" data-target-input
+                        value="{{ ('%g'|format(r.target)) if r.target is not none else '' }}" placeholder="—" aria-label="Target for {{ r.ac.name }}"> %</td>
+                </tr>
+                {% else %}
+                <tr><td colspan="3" class="muted">No asset classes yet – they're created as you enter holdings, or add one below.</td></tr>
+                {% endfor %}
+                <tr class="target-row">
+                    <td><input type="text" name="new_ac_name[]" placeholder="+ Another asset class (e.g. Bonds)" style="width: 100%; max-width: 22rem;"></td>
+                    <td class="text-right muted num">0.0%</td>
+                    <td class="text-right"><input type="text" inputmode="decimal" name="new_ac_pct[]" data-target-input placeholder="—"> %</td>
+                </tr>
+                <tr class="total-row">
+                    <td>Total</td><td></td>
+                    <td class="text-right"><span class="target-total" data-target-total>0%</span>&nbsp;&nbsp;&nbsp;&nbsp;</td>
+                </tr>
+                </tbody>
+            </table>
+        </div>
+        <p class="help">Leave a target blank to remove it. Account preferences (e.g. keep US-listed ETFs in the RRSP) are set per security on the <a href="{{ url_for('securities') }}">Securities</a> page.</p>
+
+        <div class="wizard-foot">
+            <a href="{{ url_for('setup_holdings') }}" class="btn btn-ghost">Back to holdings</a>
+            <button type="submit" class="btn btn-primary">Save targets</button>
+        </div>
+    </form>
+</div>
+{% endblock %}
