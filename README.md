@@ -40,6 +40,19 @@ Always respected:
   Recorded requests are left out of planning until you mark them received (units, ACB, cash, gain updated)
 - Optional fractional final buy per account to use up leftover cash, without pushing a class past its band
 
+Multiple portfolios (e.g. yours and your spouse's) under one login:
+- Pick the active portfolio from the selector at the top of every page; manage them under "Manage portfolios…".
+- Each portfolio is fully separate: its own accounts, securities, asset classes, targets, holdings/book values,
+  rebalancing settings (Settings page, top card) and plan. A page or form can only touch the active portfolio's rows.
+- Only prices are shared: the price sheet (a login setting) fills every portfolio in one pass, and a price typed by
+  hand is copied to the same ticker in your other portfolios.
+- New portfolios can start with a one-time copy of the current portfolio's asset classes, securities and targets.
+- Superficial loss across portfolios is opt-in (Settings → "Superficial-Loss Check Across Portfolios", default off):
+  link your spouse's portfolio so a loss sale in one isn't paired with a buy of the same ticker in the other.
+- Upgrading: on first start, existing data moves into a portfolio called "My Portfolio" with your current settings
+  (back up `data/portfolio.db` first; the securities and asset-class tables are rebuilt to make tickers unique
+  per portfolio instead of globally).
+
 Book value tracking: enter ACB (total, in base currency) for non-registered holdings on the Holdings page;
 executing trades in the app updates it (average cost) and records realised gains.
 

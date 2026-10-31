@@ -218,6 +218,22 @@
             border-color: #3498db;
         }
         
+        .portfolio-switcher select {
+            background: #34495e;
+            color: white;
+            border: 1px solid #4a6278;
+            border-radius: 4px;
+            padding: 0.35rem 0.5rem;
+            font-size: 0.95rem;
+            max-width: 14rem;
+        }
+
+        .alert-warning {
+            background: #fff3cd;
+            color: #856404;
+            border-left: 4px solid #ffc107;
+        }
+
         .text-right {
             text-align: right;
         }
@@ -242,6 +258,20 @@
         
         {% if current_user.is_authenticated %}
         <div class="navbar-menu">
+            {% if active_portfolio %}
+            <form class="portfolio-switcher" method="POST" id="portfolio-switcher"
+                  action="{{ url_for('switch_portfolio', portfolio_id=active_portfolio.id) }}">
+                <select aria-label="Portfolio" title="Active portfolio"
+                        onchange="if (this.value === 'manage') { window.location = '{{ url_for('portfolios') }}'; return; }
+                                  this.form.action = '{{ url_for('portfolios') }}/' + this.value + '/switch';
+                                  this.form.submit();">
+                    {% for p in all_portfolios %}
+                    <option value="{{ p.id }}" {% if p.id == active_portfolio.id %}selected{% endif %}>📁 {{ p.name }}</option>
+                    {% endfor %}
+                    <option value="manage">Manage portfolios…</option>
+                </select>
+            </form>
+            {% endif %}
             <a href="{{ url_for('dashboard') }}">Dashboard</a>
             <a href="{{ url_for('accounts') }}">Accounts</a>
             <a href="{{ url_for('securities') }}">Securities</a>

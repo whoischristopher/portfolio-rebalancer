@@ -2,13 +2,13 @@
 rebalancer.py – Database adapter for the rebalancing optimiser.
 
 The maths lives in services/optimizer.py (pure, unit-tested).  This module:
-  1. snapshots the user's accounts, holdings, targets and security preferences
+  1. snapshots a portfolio's accounts, holdings, targets and security preferences
      into an optimizer.Problem,
   2. runs the solve (twice in "Ask" mode – see below),
-  3. replaces the user's pending RebalanceTransactions with the new plan, and
+  3. replaces the portfolio's pending RebalanceTransactions with the new plan, and
   4. returns a JSON-serialisable summary for the Rebalance page.
 
-Taxable-sell modes (User.taxable_sell_mode):
+Taxable-sell modes (Portfolio.taxable_sell_mode):
   never – sells only happen in registered accounts
   allow – taxable sells are allowed (still minimised via realised-gain cost)
   ask   – plan WITHOUT taxable sells; if some asset class is still outside its
@@ -25,6 +25,7 @@ from models import (Account, Holding, PendingRedemption, RebalanceTransaction, S
                     SecurityPreference, Target)
 from services.fx import convert_to_base, get_exchange_rates
 from services.optimizer import AccountIn, PositionIn, Problem, SecurityIn, solve
+from services.prices import normalize_ticker
 
 log = logging.getLogger(__name__)
 
@@ -35,7 +36,7 @@ TAXABLE_MODES = ("never", "ask", "allow")
 # --------------------------------------------------------------------------- #
 # Snapshot
 # --------------------------------------------------------------------------- #
-def _buy_levels(user, accounts, securities) -> dict:
+def _buy_levels(portfolio, accounts, securities) -> dict:
     """(account_id, security_id) -> priority level (0 = best). Missing = may not buy.
 
     unrestricted / no preference   → level 0 everywhere
@@ -43,7 +44,7 @@ def _buy_levels(user, accounts, securities) -> dict:
     prioritized_accounts           → priority_1/2/3 → level 0/1/2, unlisted accounts → 3
                                      (a soft preference, never a hard exclusion)
     """
-    prefs = {p.security_id: p for p in SecurityPreference.query.filter_by(user_id=user.id).all()}
+    prefs = {p.security_id: p for p in SecurityPreference.query.filter_by(portfolio_id=portfolio.id).all()}
     levels = {}
     for sec in securities:
         pref = prefs.get(sec.id)
@@ -61,11 +62,11 @@ def _buy_levels(user, accounts, securities) -> dict:
     return levels
 
 
-def build_problem(user, exchange_rates, allow_taxable_sells: bool) -> tuple[Problem, list[str]]:
-    base = user.base_currency or "CAD"
+def build_problem(portfolio, exchange_rates, allow_taxable_sells: bool) -> tuple[Problem, list[str]]:
+    base = portfolio.base_currency or "CAD"
     notes: list[str] = []
-    accounts = Account.query.filter_by(user_id=user.id).all()
-    targets = Target.query.filter_by(user_id=user.id).all()
+    accounts = Account.query.filter_by(portfolio_id=portfolio.id).all()
+    targets = Target.query.filter_by(portfolio_id=portfolio.id).all()
     class_ids = {t.asset_class_id for t in targets}
 
     # One price per security (Security.last_price); a held copy is the fallback.
@@ -77,7 +78,9 @@ def build_problem(user, exchange_rates, allow_taxable_sells: bool) -> tuple[Prob
 
     sec_in, securities = [], []
     unpriced = []
-    for sec in Security.query.filter(Security.asset_class_id.in_(class_ids)).all() if class_ids else []:
+    candidates = Security.query.filter(Security.portfolio_id == portfolio.id,
+                                       Security.asset_class_id.in_(class_ids)).all() if class_ids else []
+    for sec in candidates:
         native = sec.last_price or holding_price.get(sec.id)
         if not native or native <= 0:
             unpriced.append(sec.ticker)
@@ -100,7 +103,7 @@ def build_problem(user, exchange_rates, allow_taxable_sells: bool) -> tuple[Prob
 
     # Units with a redemption request filed are on their way out: plan as if gone.
     pending = {}
-    for r in PendingRedemption.query.filter_by(user_id=user.id, status="pending").all():
+    for r in PendingRedemption.query.filter_by(portfolio_id=portfolio.id, status="pending").all():
         pending[(r.account_id, r.security_id)] = pending.get((r.account_id, r.security_id), 0.0) + r.quantity
     pos_in = []
     for acc in accounts:
@@ -118,29 +121,64 @@ def build_problem(user, exchange_rates, allow_taxable_sells: bool) -> tuple[Prob
         notes.append("Units with a pending redemption request are left out of this plan "
                      "(treated as already redeemed).")
 
-    since = datetime.utcnow() - timedelta(days=SUPERFICIAL_LOSS_DAYS)
-    recent = RebalanceTransaction.query.filter(
-        RebalanceTransaction.user_id == user.id,
-        RebalanceTransaction.executed.is_(True),
-        RebalanceTransaction.executed_at >= since,
-    ).all()
-    recent_buys = {t.security_id for t in recent if t.action == "BUY" and t.security_id}
-    recent_loss_sells = {t.security_id for t in recent
-                         if t.action == "SELL" and t.security_id and (t.realized_gain or 0) < 0}
+    recent_buys, recent_loss_sells = _superficial_loss_history(portfolio, notes)
 
     problem = Problem(
         accounts=acc_in, securities=sec_in, positions=pos_in,
         targets={t.asset_class_id: t.target_percentage for t in targets},
         class_names={t.asset_class_id: t.asset_class.name for t in targets},
-        buy_levels=_buy_levels(user, accounts, securities),
-        threshold_pp=user.balanced_threshold if user.balanced_threshold is not None else 0.5,
-        trade_cost=user.trade_cost or 0.0,
+        buy_levels=_buy_levels(portfolio, accounts, securities),
+        threshold_pp=portfolio.balanced_threshold if portfolio.balanced_threshold is not None else 0.5,
+        trade_cost=portfolio.trade_cost or 0.0,
         allow_taxable_sells=allow_taxable_sells,
         recent_buys=recent_buys,
         recent_loss_sells=recent_loss_sells,
-        fractional_final=bool(user.precision_rebalancing),
+        fractional_final=bool(portfolio.precision_rebalancing),
     )
     return problem, notes
+
+
+def _superficial_loss_history(portfolio, notes: list) -> tuple[set, set]:
+    """Security ids (of THIS portfolio) bought, or sold at a loss, in the last 30 days.
+
+    Optionally (Settings → superficial-loss link, off by default) also counts trades
+    recorded in one other portfolio of the same login – e.g. a spouse's, who is an
+    affiliated person under the rule. Portfolios have separate security lists, so the
+    linked trades are matched to this portfolio's securities by ticker."""
+    since = datetime.utcnow() - timedelta(days=SUPERFICIAL_LOSS_DAYS)
+
+    def recent(portfolio_id):
+        return RebalanceTransaction.query.filter(
+            RebalanceTransaction.portfolio_id == portfolio_id,
+            RebalanceTransaction.executed.is_(True),
+            RebalanceTransaction.executed_at >= since,
+        ).all()
+
+    def split(txns, sec_id_of):
+        buys, loss_sells = set(), set()
+        for t in txns:
+            sid = sec_id_of(t)
+            if not sid:
+                continue
+            if t.action == "BUY":
+                buys.add(sid)
+            elif t.action == "SELL" and (t.realized_gain or 0) < 0:
+                loss_sells.add(sid)
+        return buys, loss_sells
+
+    buys, loss_sells = split(recent(portfolio.id), lambda t: t.security_id)
+
+    link = portfolio.sl_link_portfolio
+    if link is not None and link.id != portfolio.id and link.user_id == portfolio.user_id:
+        mine = {normalize_ticker(s.ticker): s.id
+                for s in Security.query.filter_by(portfolio_id=portfolio.id).all()}
+        b2, l2 = split(recent(link.id),
+                       lambda t: t.security and mine.get(normalize_ticker(t.security.ticker)))
+        if b2 or l2:
+            notes.append(f'Superficial-loss check also covers recent trades recorded in "{link.name}".')
+        buys |= b2
+        loss_sells |= l2
+    return buys, loss_sells
 
 
 # --------------------------------------------------------------------------- #
@@ -165,8 +203,8 @@ def _summarise(result, problem) -> dict:
     }
 
 
-def _to_transactions(user, result) -> list:
-    acc_names = {a.id: a.name for a in Account.query.filter_by(user_id=user.id).all()}
+def _to_transactions(portfolio, result) -> list:
+    acc_names = {a.id: a.name for a in Account.query.filter_by(portfolio_id=portfolio.id).all()}
     buy_volume = {}
     for t in result.trades:
         if t.action == "BUY":
@@ -178,7 +216,8 @@ def _to_transactions(user, result) -> list:
     txns = []
     for n, t in enumerate(ordered, 1):
         txns.append(RebalanceTransaction(
-            user_id=user.id, account_id=t.account_id, security_id=t.security_id,
+            user_id=portfolio.user_id, portfolio_id=portfolio.id,
+            account_id=t.account_id, security_id=t.security_id,
             action=t.action, quantity=t.quantity, price=t.price_native,
             amount=round(t.quantity * t.price_native, 2), currency=t.currency,
             execution_order=n, is_final_trade=t.is_final,
@@ -187,18 +226,18 @@ def _to_transactions(user, result) -> list:
     return txns
 
 
-def redemption_options(user, result, problem, exchange_rates) -> list:
+def redemption_options(portfolio, result, problem, exchange_rates) -> list:
     """Turn per-class redemption amounts into concrete holdings to redeem from.
     Registered accounts first (no tax on redemption), then the taxable lots with the
     smallest gain per dollar; within that, larger holdings first."""
-    base = user.base_currency or "CAD"
+    base = portfolio.base_currency or "CAD"
     pending = {}
-    for r in PendingRedemption.query.filter_by(user_id=user.id, status="pending").all():
+    for r in PendingRedemption.query.filter_by(portfolio_id=portfolio.id, status="pending").all():
         pending[(r.account_id, r.security_id)] = pending.get((r.account_id, r.security_id), 0.0) + r.quantity
     out = []
     for k, amount in result.redemptions.items():
         holdings = []
-        for acc in Account.query.filter_by(user_id=user.id).all():
+        for acc in Account.query.filter_by(portfolio_id=portfolio.id).all():
             for h in acc.holdings:
                 sec = h.security
                 if sec.asset_class_id != k or not sec.is_illiquid:
@@ -226,25 +265,25 @@ def redemption_options(user, result, problem, exchange_rates) -> list:
     return out
 
 
-def generate_plan(user, taxable_override: str | None = None) -> tuple[list, dict]:
+def generate_plan(portfolio, taxable_override: str | None = None) -> tuple[list, dict]:
     """Solve, persist the plan, and return (transactions, summary)."""
-    mode = taxable_override or user.taxable_sell_mode or "ask"
+    mode = taxable_override or portfolio.taxable_sell_mode or "ask"
     if mode not in TAXABLE_MODES:
         mode = "ask"
-    fx = get_exchange_rates(user)
+    fx = get_exchange_rates(portfolio)
 
-    problem, notes = build_problem(user, fx, allow_taxable_sells=(mode == "allow"))
+    problem, notes = build_problem(portfolio, fx, allow_taxable_sells=(mode == "allow"))
     if not problem.targets:
         raise ValueError("No targets defined – set asset-class targets first.")
     result = solve(problem)
     summary = _summarise(result, problem)
     summary["mode"] = mode
     summary["notes"] = notes + summary["notes"]
-    summary["redemptions"] = redemption_options(user, result, problem, fx)
+    summary["redemptions"] = redemption_options(portfolio, result, problem, fx)
 
     # Ask mode: would allowing taxable sells fix what's left?
     if mode == "ask" and result.out_of_band:
-        alt_problem, _ = build_problem(user, fx, allow_taxable_sells=True)
+        alt_problem, _ = build_problem(portfolio, fx, allow_taxable_sells=True)
         alt = solve(alt_problem)
         if alt.taxable_sells and (len(alt.out_of_band) < len(result.out_of_band)
                                   or alt.max_out_of_band < result.max_out_of_band - 0.05):
@@ -256,18 +295,18 @@ def generate_plan(user, taxable_override: str | None = None) -> tuple[list, dict
                 "trades": len(alt.trades),
             }
 
-    txns = _to_transactions(user, result)
-    RebalanceTransaction.query.filter_by(user_id=user.id, executed=False).delete()
+    txns = _to_transactions(portfolio, result)
+    RebalanceTransaction.query.filter_by(portfolio_id=portfolio.id, executed=False).delete()
     for t in txns:
         db.session.add(t)
     db.session.commit()
 
-    log.info("Rebalance plan: mode=%s trades=%d taxable_sells=%d gain=%.2f out_of_band=%s status=%s",
-             mode, len(txns), result.taxable_sells, result.realized_gain,
+    log.info("Rebalance plan (portfolio %s): mode=%s trades=%d taxable_sells=%d gain=%.2f out_of_band=%s status=%s",
+             portfolio.id, mode, len(txns), result.taxable_sells, result.realized_gain,
              [problem.class_names[k] for k in result.out_of_band], result.status)
     return txns, summary
 
 
-def generate_rebalance_transactions(user, taxable_override: str | None = None) -> list:
+def generate_rebalance_transactions(portfolio, taxable_override: str | None = None) -> list:
     """Backwards-compatible entry point."""
-    return generate_plan(user, taxable_override)[0]
+    return generate_plan(portfolio, taxable_override)[0]

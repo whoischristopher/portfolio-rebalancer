@@ -57,9 +57,10 @@ def fetch_exchange_rate(from_curr: str, to_curr: str) -> float:
         return _FALLBACK_USD_CAD
 
 
-def get_exchange_rates(user) -> dict:
+def get_exchange_rates(_portfolio=None) -> dict:
     """
-    Return a dict of all cross-rates needed for the user's portfolio.
+    Return a dict of all cross-rates needed for a portfolio (rates are global, so the
+    argument is currently unused).
     Keys follow the pattern  "{FROM}_TO_{TO}"  e.g. "USD_TO_CAD".
     """
     rates: dict = {}

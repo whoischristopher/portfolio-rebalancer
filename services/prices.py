@@ -4,6 +4,11 @@ services/prices.py – Price handling.
 A security has ONE price: Security.last_price (in the security's currency).
 Holding.price is kept as a synced copy for the rest of the app; always change
 prices through set_security_price() so the two never diverge.
+
+Prices are the one thing portfolios share. Each portfolio has its own security list,
+but the price sheet belongs to the login and fills every portfolio in one pass, and a
+price typed by hand is copied to the same ticker (same currency) in the login's other
+portfolios – so the same ETF can never carry two different prices.
 """
 import json
 import logging
@@ -136,10 +141,42 @@ def match_prices_to_securities(prices: dict, securities) -> tuple[dict, list]:
     return matched, unmatched
 
 
-def set_security_price(security, price: float):
-    """Single place to change a price: updates the security and every holding of it."""
+def match_prices_across_portfolios(prices: dict, securities) -> tuple[dict, list]:
+    """match_prices_to_securities() for securities spread over several portfolios.
+
+    Each portfolio is matched on its own (the same ticker legitimately appears once per
+    portfolio); a sheet ticker counts as unmatched only if no portfolio could use it."""
+    groups = {}
+    for s in securities:
+        groups.setdefault(s.portfolio_id, []).append(s)
+    matched, used = {}, set()
+    for group in groups.values():
+        m, unmatched = match_prices_to_securities(prices, group)
+        matched.update(m)
+        used |= set(prices) - set(unmatched)
+    return matched, [t for t in prices if t not in used]
+
+
+def same_security_elsewhere(security):
+    """The same listing (normalised ticker + currency) in the owner's other portfolios."""
+    from models import Portfolio, Security
+    owner = security.portfolio.user_id if security.portfolio else None
+    if owner is None or not security.ticker:
+        return []
+    key = normalize_ticker(security.ticker)
+    others = (Security.query.join(Portfolio, Security.portfolio_id == Portfolio.id)
+              .filter(Portfolio.user_id == owner, Security.id != security.id,
+                      Security.currency == security.currency).all())
+    return [s for s in others if normalize_ticker(s.ticker) == key]
+
+
+def set_security_price(security, price: float, propagate: bool = True):
+    """Single place to change a price: updates the security and every holding of it –
+    and, with propagate, the same ticker in the owner's other portfolios."""
     from datetime import datetime
     from models import Holding
-    security.last_price = float(price)
-    Holding.query.filter_by(security_id=security.id).update(
-        {"price": float(price), "updated_at": datetime.utcnow()}, synchronize_session="fetch")
+    targets = [security] + (same_security_elsewhere(security) if propagate else [])
+    for sec in targets:
+        sec.last_price = float(price)
+        Holding.query.filter_by(security_id=sec.id).update(
+            {"price": float(price), "updated_at": datetime.utcnow()}, synchronize_session="fetch")
