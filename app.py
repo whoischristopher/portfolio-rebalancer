@@ -5,7 +5,7 @@ from urllib.parse import urlparse
 from flask import Flask, render_template, redirect, url_for, request, jsonify, flash, session, g, abort
 from flask_login import LoginManager, login_required, current_user
 from extensions import db
-from datetime import datetime
+from datetime import date, datetime
 from collections import defaultdict
 from sqlalchemy import inspect
 
@@ -29,7 +29,7 @@ app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
 
 db.init_app(app)
 
-from models import User, Portfolio, Account, Holding, Security, SecurityPreference
+from models import User, Portfolio, Account, Holding, Security, SecurityPreference, BOOK_VALUE_STALE_DAYS
 from models import Target, AssetClass, ExchangeRate, RebalanceTransaction, PendingRedemption
 import migrations
 from auth import auth_bp, init_oauth
@@ -374,13 +374,30 @@ def edit_holding(holding_id):
         holding.notes = request.form.get('notes')
         book_value = request.form.get('book_value', '').strip()
         target = db.session.get(Account, holding.account_id)
-        holding.book_value = float(book_value) if (book_value and not target.is_registered) else None
+        new_bv = float(book_value) if (book_value and not target.is_registered) else None
+        as_of_raw = request.form.get('book_value_as_of', '').strip()
+        try:
+            as_of = date.fromisoformat(as_of_raw) if as_of_raw else None
+        except ValueError:
+            as_of = None
+        if as_of and as_of > date.today():
+            flash('The book value date can\'t be in the future.', 'error')
+            return redirect(url_for('edit_holding', holding_id=holding.id))
+        if new_bv is None:
+            holding.book_value_as_of = None
+        elif as_of:
+            holding.book_value_as_of = as_of
+        elif new_bv != holding.book_value or holding.book_value_as_of is None:
+            holding.book_value_as_of = date.today()      # newly typed value, no date given → today
+        holding.book_value = new_bv
         db.session.commit()
         flash('Holding updated successfully.', 'success')
         return redirect(url_for('holdings'))
     return render_template(
         'edit_holding.html',
         holding=holding,
+        today=date.today().isoformat(),
+        stale_days=BOOK_VALUE_STALE_DAYS,
         accounts=_p_accounts(),
         securities=_p_securities(),
         asset_classes=_p_asset_classes(),
@@ -723,6 +740,7 @@ def add_security():
                 currency=request.form.get('currency', 'CAD'),
                 auto_update_price=request.form.get('auto_update_price') == 'on',
                 is_illiquid=request.form.get('is_illiquid') == 'on',
+                is_managed=request.form.get('is_managed') == 'on',
             )
             db.session.add(sec)
             db.session.flush()
@@ -770,6 +788,7 @@ def edit_security(security_id):
         security.currency = request.form.get('currency', 'CAD')
         security.auto_update_price = request.form.get('auto_update_price') == 'on'
         security.is_illiquid = request.form.get('is_illiquid') == 'on'
+        security.is_managed = request.form.get('is_managed') == 'on'
         if request.form.get('price'):
             set_security_price(security, float(request.form['price']))
         db.session.commit()
@@ -1109,6 +1128,7 @@ def execute_rebalance_transaction(transaction_id):
                     quantity=txn.quantity,
                     price=txn.price,
                     book_value=None if account.is_registered else txn.amount,
+                    book_value_as_of=None if account.is_registered else date.today(),
                 ))
             account.cash_balance = (account.cash_balance or 0) - amount_acct
         txn.executed = True
@@ -1245,7 +1265,7 @@ def _copy_setup(src, dst):
         db.session.add(Security(
             portfolio_id=dst.id, ticker=sec.ticker, name=sec.name, asset_class_id=ac_map[sec.asset_class_id].id,
             currency=sec.currency, auto_update_price=sec.auto_update_price,
-            is_illiquid=sec.is_illiquid, last_price=sec.last_price))
+            is_illiquid=sec.is_illiquid, is_managed=sec.is_managed, last_price=sec.last_price))
     for t in src.targets:
         db.session.add(Target(user_id=dst.user_id, portfolio_id=dst.id,
                               asset_class_id=ac_map[t.asset_class_id].id, target_percentage=t.target_percentage))
@@ -1360,6 +1380,8 @@ def api_get_holdings():
             'value_base_currency': h.market_value_in_base_currency(exchange_rates),
             'asset_class': h.security.asset_class.name, 
             'is_illiquid': h.security.is_illiquid,
+            'is_managed': h.security.is_managed,
+            'book_value_as_of': h.book_value_as_of.isoformat() if h.book_value_as_of else None,
         }
         for account in accounts
         for h in account.holdings

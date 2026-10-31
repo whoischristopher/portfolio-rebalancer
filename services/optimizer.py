@@ -69,6 +69,7 @@ class SecurityIn:
     price_native: float               # security currency, per share
     currency: str
     sellable: bool = True             # False = illiquid (e.g. private fund, redemption takes months)
+    managed: bool = False             # provider-managed (direct indexing): no superficial-loss rule
 
 
 @dataclass
@@ -258,7 +259,10 @@ def solve(p: Problem) -> Result:
             continue
         q_held, bv = held.get((a_id, s_id), [0.0, 0.0])
         level = p.buy_levels.get((a_id, s_id))
-        can_buy = level is not None and s_id not in p.recent_loss_sells
+        # Superficial loss doesn't apply to a provider-managed sleeve as a whole: what's
+        # actually disposed of is the provider's choice of underlying stocks.
+        sl_applies = not s.managed
+        can_buy = level is not None and not (sl_applies and s_id in p.recent_loss_sells)
 
         # realised gain per share if sold (taxable accounts only)
         gain_ps = 0.0
@@ -270,7 +274,7 @@ def solve(p: Problem) -> Result:
                 gain_ps = s.price - bv / q_held
         is_loss = a.taxable and q_held > 0 and bv is not None and gain_ps < 0
         can_sell = q_held > 0 and s.sellable and (not a.taxable or p.allow_taxable_sells)
-        if is_loss and s_id in p.recent_buys:
+        if is_loss and sl_applies and s_id in p.recent_buys:
             can_sell = False   # loss would be superficial
             notes.append(f"{s.ticker} in {a.name}: sale at a loss blocked – bought within the last 30 days.")
 
@@ -346,7 +350,7 @@ def solve(p: Problem) -> Result:
 
     # superficial loss inside this plan: a loss sale of X forbids buying X anywhere
     for i in pairs:
-        if not i["is_loss"]:
+        if not i["is_loss"] or i["sec"].managed:
             continue
         for j in pairs:
             if j["sec"].id == i["sec"].id and j is not i:
@@ -487,7 +491,7 @@ def _buy_candidates(p: Problem, acc, sec, held) -> set:
     for (a_id, s_id), lvl in p.buy_levels.items():
         if a_id not in acc or s_id not in sec or sec[s_id].price <= 0:
             continue
-        if s_id in p.recent_loss_sells and (a_id, s_id) not in held:
+        if s_id in p.recent_loss_sells and not sec[s_id].managed and (a_id, s_id) not in held:
             continue
         if (a_id, s_id) in held:
             out.add((a_id, s_id))

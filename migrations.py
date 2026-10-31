@@ -31,6 +31,8 @@ ADDED_COLUMNS = [
     ('rebalance_transactions', 'realized_gain', 'FLOAT'),
     ('securities', 'last_price', 'FLOAT'),
     ('securities', 'is_illiquid', 'BOOLEAN DEFAULT FALSE'),
+    ('securities', 'is_managed', 'BOOLEAN DEFAULT FALSE'),
+    ('holdings', 'book_value_as_of', 'DATE'),
 ]
 
 # Tables scoped to a portfolio. Those with a user_id column are backfilled from it.
@@ -172,7 +174,8 @@ def repair_cross_portfolio_refs():
                 clone = Security(portfolio_id=pid, ticker=sec.ticker, name=sec.name,
                                  asset_class=ac_in(pid, sec.asset_class), currency=sec.currency,
                                  auto_update_price=sec.auto_update_price,
-                                 is_illiquid=sec.is_illiquid, last_price=sec.last_price)
+                                 is_illiquid=sec.is_illiquid, is_managed=sec.is_managed,
+                                 last_price=sec.last_price)
                 db.session.add(clone); db.session.flush()
             sec_cache[key] = clone
         return sec_cache[key]

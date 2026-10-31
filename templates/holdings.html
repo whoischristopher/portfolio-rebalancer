@@ -60,6 +60,7 @@
                 <td>
                     <strong>{{ holding.security.ticker }}</strong>
                     {% if holding.security.is_illiquid %}<span class="badge badge-illiquid" title="Can't be sold on demand – the rebalancer never sells it">illiquid</span>{% endif %}
+                    {% if holding.security.is_managed %}<span class="badge badge-illiquid" title="Managed by a provider who trades inside it (e.g. direct indexing)">managed</span>{% endif %}
                     <span class="sub" title="{{ holding.security.name or '' }}">{{ holding.security.name or '' }}</span>
                 </td>
                 <td>{{ holding.security.asset_class.name if holding.security.asset_class else '—' }}</td>
@@ -70,6 +71,8 @@
                 {% if not account.is_registered %}
                 <td class="text-right num">
                     {% if holding.book_value is not none %}{{ '{:,.2f}'.format(holding.book_value) }}
+                        {% if holding.security.is_managed %}<span class="sub">{% if holding.book_value_as_of %}as of {{ holding.book_value_as_of.isoformat() }}{% else %}no date{% endif %}</span>{% endif %}
+                        {% if holding.book_value_stale %}<span class="badge badge-warn" title="The provider's tax-loss harvesting lowers this over time – update it from your latest statement">update</span>{% endif %}
                     {% else %}<span class="badge badge-warn" title="Missing – the rebalancer will assume the whole sale is gain">missing</span>{% endif %}
                 </td>
                 {% endif %}

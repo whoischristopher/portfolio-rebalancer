@@ -42,6 +42,8 @@
             <label class="check"><input type="checkbox" name="auto_update_price" {% if security.auto_update_price %}checked{% endif %}> Update the price from my price sheet</label><br>
             <label class="check"><input type="checkbox" name="is_illiquid" {% if security.is_illiquid %}checked{% endif %}> Can't be sold on demand (illiquid)</label>
             <small class="help">For private funds and similar: the rebalancer will still buy it but never sells it. If it's over target, the other targets shrink to compensate.</small>
+            <label class="check" style="margin-top: 0.75rem;"><input type="checkbox" name="is_managed" {% if security.is_managed %}checked{% endif %}> Managed by a provider (e.g. a direct-indexing account)</label>
+            <small class="help">For an account the provider trades inside, held here as one security priced at $1 a unit. The superficial-loss check is skipped for it, and you'll be asked for the date of its book value, since the provider's tax-loss harvesting changes that without any trade recorded here.</small>
         </div>
 
         <div class="btn-row">

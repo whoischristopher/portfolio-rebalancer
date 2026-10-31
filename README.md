@@ -38,6 +38,9 @@ Always respected:
   class's target, the other targets shrink proportionally; beyond the band, the Rebalance page asks you to
   file a redemption request and suggests how many units, from which accounts (registered first).
   Recorded requests are left out of planning until you mark them received (units, ACB, cash, gain updated)
+- Provider-managed holdings (e.g. a direct-indexing account held as one security at $1/unit; flag on the
+  Securities page) are traded like any other taxable position (withdrawals priced by estimated gain), but the
+  superficial-loss checks are skipped for them – the provider's underlying stock trades are the real dispositions
 - Optional fractional final buy per account to use up leftover cash, without pushing a class past its band
 
 Getting data in:
@@ -72,6 +75,9 @@ Book value tracking (taxable accounts only): enter ACB (total, in the security's
 holdings; executing trades in the app updates it (average cost) and records realised gains. ACB isn't stored for
 registered accounts: existing values are cleared on startup, and changing an account to registered (or moving a
 holding into one) clears it. Changing an account to taxable flags its holdings' book value as missing.
+Each book value carries an "as of" date. For provider-managed holdings that date matters: the provider's
+tax-loss harvesting lowers the ACB without any trade recorded here, so the Holdings page and (when taxable
+sells are in play) the Rebalance page flag one that is missing, undated or more than 90 days old.
 
 Not (yet) handled: tax-loss harvesting, asset location beyond security priorities, cross-account transfers,
 trades placed outside the app for the 30-day superficial loss window.

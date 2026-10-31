@@ -182,6 +182,46 @@ def test_recent_loss_sale_blocks_rebuy():
     assert not [t for t in trades_by(res, "BUY") if t.security_id == ZAG]
 
 
+
+def managed_loss_case(**kw):
+    """loss_case with XUU standing in for a provider-managed sleeve (direct indexing)."""
+    prob = loss_case(**kw)
+    prob.securities = [SecurityIn(x.id, x.ticker, x.asset_class_id, x.price, x.price_native, x.currency,
+                                  managed=(x.id == XUU)) for x in prob.securities]
+    return prob
+
+
+def test_managed_sleeve_ignores_superficial_loss_rule():
+    # A recent contribution doesn't block a withdrawal at a loss...
+    plain = solve(loss_case(recent_buys={XUU}, allow_taxable_sells=True))
+    managed = solve(managed_loss_case(recent_buys={XUU}, allow_taxable_sells=True))
+    assert not [t for t in trades_by(plain, "SELL", NR) if t.security_id == XUU]
+    assert [t for t in trades_by(managed, "SELL", NR) if t.security_id == XUU]
+    assert not any("blocked" in n and "XUU" in n for n in managed.notes)
+
+
+def test_managed_sleeve_can_be_topped_up_after_a_recent_loss_withdrawal():
+    def underweight_us(managed):
+        secs = [SecurityIn(x.id, x.ticker, x.asset_class_id, x.price, x.price_native, x.currency,
+                           managed=managed and x.id == XUU) for x in securities()]
+        return Problem(accounts=[AccountIn(TFSA, "TFSA", False, 30000)], securities=secs,
+                       positions=[PositionIn(TFSA, XIC, 500)], targets={US: 60, CA: 40},
+                       class_names=NAMES, buy_levels=levels(), recent_loss_sells={XUU})
+    bought = lambda r: [t for t in trades_by(r, "BUY") if t.security_id == XUU]
+    assert not bought(solve(underweight_us(managed=False)))   # plain security: rebuy blocked
+    assert bought(solve(underweight_us(managed=True)))        # managed sleeve: contribution allowed
+
+
+def test_managed_sleeve_still_minimises_tax_on_gains():
+    # Selling a managed position at a gain still costs realised gain in the objective.
+    res = solve(taxable_only_fix(allow_taxable_sells=True, threshold_pp=3.0, xic_acb=3000))
+    prob = taxable_only_fix(allow_taxable_sells=True, threshold_pp=3.0, xic_acb=3000)
+    prob.securities = [SecurityIn(x.id, x.ticker, x.asset_class_id, x.price, x.price_native, x.currency,
+                                  managed=(x.id == XIC)) for x in prob.securities]
+    res_m = solve(prob)
+    assert res_m.realized_gain == pytest.approx(res.realized_gain, rel=1e-6)
+
+
 # --------------------------------------------------------------------------- #
 # Trade count, new positions, consolidation, priority
 # --------------------------------------------------------------------------- #

@@ -21,8 +21,8 @@ import logging
 from datetime import datetime, timedelta
 
 from extensions import db
-from models import (Account, Holding, PendingRedemption, RebalanceTransaction, Security,
-                    SecurityPreference, Target)
+from models import (Account, Holding, PendingRedemption, RebalanceTransaction,
+                    Security, SecurityPreference, Target)
 from services.fx import convert_to_base, get_exchange_rates
 from services.optimizer import AccountIn, PositionIn, Problem, SecurityIn, solve
 from services.prices import normalize_ticker
@@ -91,6 +91,7 @@ def build_problem(portfolio, exchange_rates, allow_taxable_sells: bool) -> tuple
             price=convert_to_base(native, sec.currency, base, exchange_rates),
             price_native=native, currency=sec.currency,
             sellable=not bool(getattr(sec, "is_illiquid", False)),
+            managed=bool(getattr(sec, "is_managed", False)),
         ))
     if unpriced:
         notes.append("No price for " + ", ".join(sorted(unpriced)) +
@@ -136,6 +137,31 @@ def build_problem(portfolio, exchange_rates, allow_taxable_sells: bool) -> tuple
         fractional_final=bool(portfolio.precision_rebalancing),
     )
     return problem, notes
+
+
+def _managed_book_value_notes(portfolio) -> list[str]:
+    """Warnings for provider-managed positions (e.g. direct indexing) in taxable accounts
+    whose book value is missing, undated or old. The provider's own trades (tax-loss
+    harvesting above all) lower the book value without anything being recorded here, so
+    an old figure understates the gain a withdrawal would realise."""
+    out = []
+    for acc in Account.query.filter_by(portfolio_id=portfolio.id, is_registered=False).all():
+        for h in acc.holdings:
+            if not h.security.is_managed or not h.book_value_stale:
+                continue
+            where = f"{h.security.ticker} in {acc.name}"
+            if h.book_value is None:
+                out.append(f"{where}: no book value – a withdrawal is treated as 100% gain. "
+                           "Enter the total book cost from your latest statement.")
+            elif h.book_value_as_of is None:
+                out.append(f"{where}: book value has no date, so it may be out of date. Re-enter it with "
+                           "the date of the statement it came from.")
+            else:
+                out.append(f"{where}: book value is {h.book_value_age_days} days old "
+                           f"(as of {h.book_value_as_of.isoformat()}). The provider's tax-loss harvesting "
+                           "lowers it over time, so the gain on a withdrawal is probably understated – "
+                           "update it from your latest statement.")
+    return out
 
 
 def _superficial_loss_history(portfolio, notes: list) -> tuple[set, set]:
@@ -294,6 +320,10 @@ def generate_plan(portfolio, taxable_override: str | None = None) -> tuple[list,
                 "realized_gain": round(alt.realized_gain, 2),
                 "trades": len(alt.trades),
             }
+
+    # Taxable sells in play (allowed, or offered): flag managed positions whose ACB is stale.
+    if mode == "allow" or "offer" in summary:
+        summary["notes"] += _managed_book_value_notes(portfolio)
 
     txns = _to_transactions(portfolio, result)
     RebalanceTransaction.query.filter_by(portfolio_id=portfolio.id, executed=False).delete()

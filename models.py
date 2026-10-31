@@ -1,6 +1,10 @@
 from flask_login import UserMixin
-from datetime import datetime
+from datetime import date, datetime
 from extensions import db
+
+# A provider-managed holding's book value (see Security.is_managed) goes out of date on
+# its own, so the app asks for the statement date and flags it after this many days.
+BOOK_VALUE_STALE_DAYS = 90
 
 class User(UserMixin, db.Model):
     '''User model for authentication'''
@@ -118,6 +122,9 @@ class Holding(db.Model):
     # USD holdings the FX component of the gain is approximate.
     # Only matters for non-registered accounts; NULL = unknown (treated as all gain).
     book_value = db.Column(db.Float, nullable=True)
+    # Date the book value was true (e.g. the statement date it was copied from). Matters
+    # for provider-managed securities, whose ACB changes without any trade recorded here.
+    book_value_as_of = db.Column(db.Date, nullable=True)
     notes = db.Column(db.Text)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -138,6 +145,21 @@ class Holding(db.Model):
             rate = exchange_rates.get(f"{sec_currency}_TO_{base_currency}", 1.0)
             value *= rate
         return value
+
+    @property
+    def book_value_age_days(self):
+        '''Days since book_value_as_of; None if no date was recorded.'''
+        return None if self.book_value_as_of is None else (date.today() - self.book_value_as_of).days
+
+    @property
+    def book_value_stale(self):
+        '''True when this is a provider-managed position in a taxable account whose book
+        value is missing, undated, or older than BOOK_VALUE_STALE_DAYS.'''
+        if not self.security.is_managed or self.account.is_registered:
+            return False
+        if self.book_value is None or self.book_value_as_of is None:
+            return True
+        return self.book_value_age_days > BOOK_VALUE_STALE_DAYS
 
     @property
     def ticker(self):
@@ -274,6 +296,11 @@ class Security(db.Model):
     currency = db.Column(db.String(3), default='CAD')
     auto_update_price = db.Column(db.Boolean, default=True)
     is_illiquid = db.Column(db.Boolean, default=False)  # can't be sold on demand (private funds etc.)
+    # Managed by a provider who trades inside it (e.g. a direct-indexing account held as
+    # one $1-unit "security"). Its book value changes without trades recorded here, and
+    # the superficial-loss rule doesn't apply to it as a whole – the provider's
+    # underlying stock trades are the real dispositions.
+    is_managed = db.Column(db.Boolean, default=False)
     last_price = db.Column(db.Float, nullable=True)   # THE price (security currency); holdings mirror it
 
     # Relationship links

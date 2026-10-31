@@ -186,8 +186,8 @@
     const sel = e.target.closest('[data-acb-toggle]');
     if (!sel) return;
     const registered = sel.selectedOptions[0] && sel.selectedOptions[0].dataset.registered === '1';
-    const group = document.querySelector(sel.dataset.acbToggle);
-    if (group) group.classList.toggle('hidden', registered);
+    document.querySelectorAll(sel.dataset.acbToggle)
+      .forEach((group) => group.classList.toggle('hidden', registered));
     const none = document.getElementById('bv-none');
     if (none) none.classList.toggle('hidden', !registered);
   });

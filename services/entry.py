@@ -5,6 +5,8 @@ The idea: a holding is entered by *ticker*. If the ticker is already a security 
 portfolio it is used as-is; otherwise the security (and, if needed, its asset class) is
 created on the spot from the few extra fields the form shows for a new ticker.
 """
+from datetime import date
+
 from extensions import db
 from models import AssetClass, Holding, Security
 from services.prices import normalize_ticker, same_security_elsewhere, set_security_price
@@ -148,11 +150,13 @@ def upsert_holding(account, security, quantity, book_value=None):
         # Total ACB is only known if it's known for both lots; otherwise it becomes unknown
         # (the rebalancer then treats a sale as all gain – the conservative choice).
         h.book_value = h.book_value + book_value if (h.book_value is not None and book_value is not None) else None
+        h.book_value_as_of = date.today() if h.book_value is not None else None
         h.quantity += quantity
         h.price = security.last_price or h.price
         return h, True
     h = Holding(account_id=account.id, security_id=security.id, quantity=quantity,
-                price=security.last_price or 0.0, book_value=book_value)
+                price=security.last_price or 0.0, book_value=book_value,
+                book_value_as_of=date.today() if book_value is not None else None)
     db.session.add(h)
     return h, False
 
