@@ -172,3 +172,60 @@ def test_rebalance_flow():
     with app.app_context():
         assert not RebalanceTransaction.query.filter_by(account_id=acc_ids["Non-Reg"]).count()
     assert c.get("/rebalance").status_code == 200
+
+    # --- illiquid holding far over target → redemption suggested → record → receive
+    from models import PendingRedemption
+    with app.app_context():
+        Security.query.get(ids["XEF"]).is_illiquid = True
+        xef = Holding.query.filter_by(account_id=acc_ids["RRSP"], security_id=ids["XEF"]).first()
+        xef.quantity, xef.book_value = 6000, 200000.0          # Intl far over its 20% target
+        u = User.query.get(uid); u.taxable_sell_mode = "ask"; u.balanced_threshold = 0.5
+        db.session.commit()
+    c.post("/rebalance/generate")
+    p = plan()
+    assert p["redemptions"] and p["redemptions"][0]["holdings"], p.get("redemptions")
+    opt = p["redemptions"][0]["holdings"][0]
+    assert opt["ticker"] == "XEF" and 0 < opt["suggested_units"] <= 6000
+    with app.app_context():
+        assert not RebalanceTransaction.query.filter_by(user_id=uid, executed=False, action="SELL",
+                                                        security_id=ids["XEF"]).count()   # never sold
+    page = c.get("/rebalance").get_data(as_text=True)
+    assert "Action needed: file a redemption request" in page
+
+    c.post("/redemptions/add", data={"account_id": opt["account_id"], "security_id": opt["security_id"],
+                                     "quantity": opt["suggested_units"], "expected_on": "2027-03-31"})
+    with app.app_context():
+        r = PendingRedemption.query.filter_by(user_id=uid, status="pending").one()
+        rid, units = r.id, r.quantity
+    p = plan()
+    assert not p["redemptions"], "recorded units must be left out of planning – no repeat suggestion"
+    page = c.get("/rebalance").get_data(as_text=True)
+    assert "Pending Redemptions" in page and "Action needed" not in page
+
+    # can't over-request
+    c.post("/redemptions/add", data={"account_id": opt["account_id"], "security_id": opt["security_id"],
+                                     "quantity": 6000})
+    with app.app_context():
+        assert PendingRedemption.query.filter_by(user_id=uid, status="pending").count() == 1
+        cash0 = Account.query.get(acc_ids["RRSP"]).cash_balance
+
+    c.post(f"/redemptions/{rid}/receive", data={"proceeds": "10000"})
+    with app.app_context():
+        r = PendingRedemption.query.get(rid)
+        xef = Holding.query.filter_by(account_id=acc_ids["RRSP"], security_id=ids["XEF"]).first()
+        assert r.status == "received" and r.proceeds == 10000
+        assert abs(xef.quantity - (6000 - units)) < 1e-6
+        assert abs(xef.book_value - 200000.0 * (6000 - units) / 6000) < 0.01      # average-cost ACB
+        assert abs(Account.query.get(acc_ids["RRSP"]).cash_balance - (cash0 + 10000)) < 0.01
+        rec = RebalanceTransaction.query.filter_by(user_id=uid, executed=True, security_id=ids["XEF"],
+                                                   action="SELL").order_by(RebalanceTransaction.id.desc()).first()
+        assert rec.amount == 10000 and rec.realized_gain is None                 # registered: no gain
+
+    # cancel path
+    c.post("/redemptions/add", data={"account_id": acc_ids["RRSP"], "security_id": ids["XEF"], "quantity": 10})
+    with app.app_context():
+        rid2 = PendingRedemption.query.filter_by(user_id=uid, status="pending").one().id
+    c.post(f"/redemptions/{rid2}/cancel")
+    with app.app_context():
+        assert PendingRedemption.query.get(rid2).status == "cancelled"
+    assert c.get("/rebalance").status_code == 200

@@ -134,6 +134,7 @@ class Result:
     trades: list[Trade]
     total_value: float
     effective_targets: dict[int, float]   # % after re-normalising around unsellable holdings
+    redemptions: dict[int, float]         # asset_class_id -> base $ to redeem from illiquid holdings
     drift_before: dict[int, float]    # asset_class_id -> percentage points vs effective target
     drift_after: dict[int, float]
     out_of_band: list[int]            # asset classes still outside the band after trading
@@ -221,15 +222,16 @@ def solve(p: Problem) -> Result:
         room = sum(p.targets.values()) - sum(eff[k] for k in pinned)
         for k in free:
             eff[k] = p.targets[k] * room / free_orig if free_orig > 0 else 0.0
+    redemptions: dict[int, float] = {}
     for k in sorted(pinned, key=lambda k: -locked[k]):
         name = p.class_names.get(k, str(k))
         over_pp = eff[k] - p.targets[k]
-        msg = (f"{name}: {eff[k]:.2f}% is in holdings that can't be sold (target {p.targets[k]:.2f}%) – "
-               f"the other targets were reduced proportionally to compensate.")
+        notes.append(f"{name}: {eff[k]:.2f}% is in holdings that can't be sold (target {p.targets[k]:.2f}%) – "
+                     f"the other targets were reduced proportionally to compensate.")
         if over_pp > p.threshold_pp:
-            msg += (f" Consider requesting a redemption of about {over_pp / 100 * total:,.0f} "
-                    f"to bring it back to target.")
-        notes.append(msg)
+            # Redeeming x also shrinks the total, so solve (L - x) = t·(T - x)  →  x = (L - t·T) / (1 - t)
+            t = p.targets[k] / 100
+            redemptions[k] = over_pp / 100 * total / (1 - t) if t < 1 else over_pp / 100 * total
 
     target_val = {k: total * pct / 100 for k, pct in eff.items()}
     band = p.threshold_pp / 100 * total
@@ -465,7 +467,7 @@ def solve(p: Problem) -> Result:
     return Result(
         status="optimal" if res.status == 0 else "time_limit",
         trades=trades, total_value=total,
-        effective_targets=eff, drift_before=drift_before, drift_after=drift_after, out_of_band=out,
+        effective_targets=eff, redemptions=redemptions, drift_before=drift_before, drift_after=drift_after, out_of_band=out,
         realized_gain=sum(t.realized_gain or 0 for t in sells_tax),
         taxable_sells=len(sells_tax), cash_left=cash_left, notes=_dedupe(notes),
         objective=float(res.fun) - _GAP_ANCHOR,

@@ -189,6 +189,26 @@ class RebalanceTransaction(db.Model):
         return f'<Transaction {self.action} {self.quantity} of {self.security.ticker if self.security else "?"} @ ${self.price}>'
 
 
+class PendingRedemption(db.Model):
+    '''A redemption request filed for an illiquid holding, paid out months later.
+    While pending, the units are left out of rebalancing (treated as already gone).'''
+    __tablename__ = 'pending_redemptions'
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False, index=True)
+    account_id = db.Column(db.Integer, db.ForeignKey('accounts.id'), nullable=False)
+    security_id = db.Column(db.Integer, db.ForeignKey('securities.id'), nullable=False)
+    quantity = db.Column(db.Float, nullable=False)
+    requested_on = db.Column(db.Date, default=lambda: datetime.utcnow().date())
+    expected_on = db.Column(db.Date, nullable=True)
+    status = db.Column(db.String(10), default='pending')    # pending | received | cancelled
+    received_on = db.Column(db.Date, nullable=True)
+    proceeds = db.Column(db.Float, nullable=True)           # security currency
+
+    account = db.relationship('Account')
+    security = db.relationship('Security')
+
+
 class AssetClass(db.Model):
     __tablename__ = 'asset_classes'
     id = db.Column(db.Integer, primary_key=True)

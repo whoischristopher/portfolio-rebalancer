@@ -34,6 +34,10 @@ Always respected:
   outside its band, offers the alternative with the gain it would realise
 - Superficial loss rule: no loss sale + repurchase of the same security in one plan, no buy within 30 days of a
   recorded loss sale, no loss sale within 30 days of a recorded buy (only trades executed in this app are known)
+- Illiquid holdings (private funds; flag on the Securities page) are never sold. If they alone exceed their
+  class's target, the other targets shrink proportionally; beyond the band, the Rebalance page asks you to
+  file a redemption request and suggests how many units, from which accounts (registered first).
+  Recorded requests are left out of planning until you mark them received (units, ACB, cash, gain updated)
 - Optional fractional final buy per account to use up leftover cash, without pushing a class past its band
 
 Book value tracking: enter ACB (total, in base currency) for non-registered holdings on the Holdings page;

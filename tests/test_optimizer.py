@@ -290,13 +290,19 @@ def test_illiquid_never_sold_and_targets_renormalised():
     assert res.effective_targets[1] / res.effective_targets[2] == pytest.approx(36 / 22)
     assert not res.out_of_band
     assert any("can't be sold" in n for n in res.notes)
+    assert res.redemptions == {}          # 0.32 / 0.10 pts over: inside the band, no redemption
 
 
 def test_illiquid_far_over_target_suggests_redemption():
     p = _illiquid(user_portfolio(), {5})
     p.positions = [PositionIn(1, 105, 315384 * 2 / 50.0) if q.security_id == 105 else q for q in p.positions]
     res = solve(p)
-    assert any("redemption" in n for n in res.notes)
+    # PE doubled: ~5.2 pts over target → suggest redeeming about that much, never sell it
+    assert res.redemptions
+    # redeeming exactly that amount must land PE on its 5% target
+    total = res.total_value
+    pe = 315384 * 2
+    assert (pe - res.redemptions[5]) / (total - res.redemptions[5]) == pytest.approx(0.05, abs=1e-6)
     assert not [t for t in res.trades if t.action == "SELL" and t.security_id == 105]
 
 
