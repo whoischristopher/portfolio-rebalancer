@@ -625,50 +625,6 @@ def rebalance():
     )
 
 
-@app.route('/rebalance/details/<int:asset_class_id>')
-@login_required
-def rebalance_details(asset_class_id):
-    P = current_portfolio()
-    asset_class = _get(AssetClass, asset_class_id)
-    all_securities = Security.query.filter_by(portfolio_id=P.id, asset_class_id=asset_class.id).all()
-    prefs = {
-        p.security_id: p
-        for p in SecurityPreference.query.filter_by(portfolio_id=P.id).all()
-    }
-    user_accounts = _p_accounts()
-    security_restrictions = []
-    for security in all_securities:
-        pref = prefs.get(security.id)
-        rtype = pref.restriction_type if pref else 'unrestricted'
-        if rtype == 'restricted_to_accounts':
-            allowed_ids = (pref.account_config or {}).get('allowed', [])
-            allowed_accounts = [a for a in user_accounts if a.id in allowed_ids]
-            priority_accounts = []
-        elif rtype == 'prioritized_accounts':
-            allowed_accounts = user_accounts
-            cfg = pref.account_config or {}
-            priority_accounts = [
-                {'level': lvl, 'accounts': [a for a in user_accounts if a.id in cfg.get(f'priority_{lvl}', [])]}
-                for lvl in (1, 2, 3)
-            ]
-        else:
-            allowed_accounts = user_accounts
-            priority_accounts = []
-        security_restrictions.append({
-            'security': security,
-            'restriction_type': rtype,
-            'allowed_accounts': allowed_accounts,
-            'priority_accounts': priority_accounts,
-            'notes': pref.notes if pref else None,
-        })
-    return render_template(
-        'rebalance_details.html',
-        asset_class=asset_class,
-        security_restrictions=security_restrictions,
-        base_currency=P.base_currency,
-    )
-
-
 def _discard_pending_plan():
     P = current_portfolio()
     RebalanceTransaction.query.filter_by(portfolio_id=P.id, executed=False).delete()
