@@ -141,6 +141,8 @@ def upsert_holding(account, security, quantity, book_value=None):
     Returns (holding, merged)."""
     if quantity is None or quantity <= 0:
         raise EntryError(f'Quantity for {security.ticker} must be more than 0.')
+    if account.is_registered:
+        book_value = None                   # ACB isn't tracked in registered accounts
     h = Holding.query.filter_by(account_id=account.id, security_id=security.id).first()
     if h:
         # Total ACB is only known if it's known for both lots; otherwise it becomes unknown

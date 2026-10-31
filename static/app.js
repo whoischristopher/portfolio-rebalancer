@@ -181,6 +181,27 @@
     if (e.target.matches('[data-target-input]')) updateTargetTotal(e.target.form);
   });
 
+  /* ---------- Book value (ACB) only exists in taxable accounts ---------- */
+  document.addEventListener('change', (e) => {
+    const sel = e.target.closest('[data-acb-toggle]');
+    if (!sel) return;
+    const registered = sel.selectedOptions[0] && sel.selectedOptions[0].dataset.registered === '1';
+    const group = document.querySelector(sel.dataset.acbToggle);
+    if (group) group.classList.toggle('hidden', registered);
+    const none = document.getElementById('bv-none');
+    if (none) none.classList.toggle('hidden', !registered);
+  });
+  document.addEventListener('submit', (e) => {
+    const f = e.target;
+    if (!f.dataset || !f.dataset.acbCount) return;
+    const box = f.querySelector('[data-registered]');
+    const n = parseInt(f.dataset.acbCount, 10);
+    if (box && box.checked && f.dataset.wasRegistered === '0' && n > 0 &&
+        !confirm(`Making this account registered clears the book value on ${n} holding(s). Continue?`)) {
+      e.preventDefault();
+    }
+  });
+
   /* ---------- Init ---------- */
   document.addEventListener('DOMContentLoaded', () => {
     document.querySelectorAll('[data-account-scope]').forEach(syncRegistered);

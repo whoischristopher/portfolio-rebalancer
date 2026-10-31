@@ -204,3 +204,53 @@ def test_lookup_api_and_isolation(fresh_user):
     assert c.post("/holdings/add", data=data).status_code == 404
     assert c.get(f"/setup/holdings/{sp_acct_id}").status_code == 404
     assert c.post(f"/accounts/{sp_acct_id}/edit", data={"name": "x"}).status_code == 404
+
+
+def test_book_value_only_in_taxable_accounts(fresh_user):
+    """ACB means nothing in a registered account: it isn't stored there, is cleared when an
+    account becomes registered (or by the startup migration), and is asked for when an
+    account becomes taxable."""
+    app, db, c, ids = fresh_user
+    import migrations
+    from models import Account, AssetClass, Holding, Security
+    with app.app_context():
+        ac = AssetClass(portfolio_id=ids["p"], name="Equity"); db.session.add(ac); db.session.flush()
+        sec = Security(portfolio_id=ids["p"], ticker="XEQT", asset_class_id=ac.id, currency="CAD", last_price=30.0)
+        rrsp = Account(user_id=ids["user"], portfolio_id=ids["p"], name="RRSP", account_type="RRSP", is_registered=True)
+        nr = Account(user_id=ids["user"], portfolio_id=ids["p"], name="Taxable", account_type="Non-Registered")
+        db.session.add_all([sec, rrsp, nr]); db.session.flush()
+        legacy = Holding(account_id=rrsp.id, security_id=sec.id, quantity=10, price=30, book_value=250.0)
+        taxable = Holding(account_id=nr.id, security_id=sec.id, quantity=10, price=30, book_value=260.0)
+        db.session.add_all([legacy, taxable]); db.session.commit()
+        ref = dict(rrsp=rrsp.id, nr=nr.id, legacy=legacy.id, taxable=taxable.id)
+        migrations.clear_registered_book_values()
+        assert db.session.get(Holding, ref["legacy"]).book_value is None      # old registered value cleared
+        assert db.session.get(Holding, ref["taxable"]).book_value == 260.0    # taxable untouched
+
+    # Entering a book value in a registered account is ignored.
+    data = _rows(ticker=["XEQT"], quantity=["5"], book_value=["999"]); data["account_id"] = ref["rrsp"]
+    c.post("/holdings/add", data=data)
+    with app.app_context():
+        assert db.session.get(Holding, ref["legacy"]).book_value is None
+
+    # Moving a holding into a registered account drops its ACB.
+    c.post(f"/holdings/{ref['taxable']}/edit", data={"account_id": ref["rrsp"], "security_id": "", "quantity": "10",
+                                                    "price": "30", "book_value": "260"})
+    with app.app_context():
+        sec_id = Security.query.filter_by(portfolio_id=ids["p"]).one().id
+    c.post(f"/holdings/{ref['taxable']}/edit", data={"account_id": ref["rrsp"], "security_id": sec_id,
+                                                    "quantity": "10", "price": "30", "book_value": "260"})
+    with app.app_context():
+        assert db.session.get(Holding, ref["taxable"]).book_value is None
+        h = db.session.get(Holding, ref["taxable"]); h.account_id = ref["nr"]; h.book_value = 260.0
+        db.session.commit()
+
+    # Reclassifying: taxable → registered clears ACB; registered → taxable asks for it.
+    r = c.post(f"/accounts/{ref['nr']}/edit", data={"name": "Taxable", "account_type": "TFSA", "currency": "CAD"},
+               follow_redirects=True)
+    assert b"Cleared book value on 1 holding" in r.data
+    with app.app_context():
+        assert db.session.get(Holding, ref["taxable"]).book_value is None
+    r = c.post(f"/accounts/{ref['nr']}/edit", data={"name": "Taxable", "account_type": "Non-Registered",
+                                                    "currency": "CAD"}, follow_redirects=True)
+    assert b"is now taxable: enter the book value" in r.data

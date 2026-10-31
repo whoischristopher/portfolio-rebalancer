@@ -66,8 +66,10 @@ Multiple portfolios (e.g. yours and your spouse's) under one login:
   (back up `data/portfolio.db` first; the securities and asset-class tables are rebuilt to make tickers unique
   per portfolio instead of globally).
 
-Book value tracking: enter ACB (total, in base currency) for non-registered holdings on the Holdings page;
-executing trades in the app updates it (average cost) and records realised gains.
+Book value tracking (taxable accounts only): enter ACB (total, in the security's currency) for non-registered
+holdings; executing trades in the app updates it (average cost) and records realised gains. ACB isn't stored for
+registered accounts: existing values are cleared on startup, and changing an account to registered (or moving a
+holding into one) clears it. Changing an account to taxable flags its holdings' book value as missing.
 
 Not (yet) handled: tax-loss harvesting, asset location beyond security priorities, cross-account transfers,
 trades placed outside the app for the 30-day superficial loss window.

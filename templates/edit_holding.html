@@ -13,9 +13,9 @@
   <div class="field-grid" style="grid-template-columns: 1fr 1fr;">
     <div class="form-group">
       <label for="account_id">Account</label>
-      <select id="account_id" name="account_id">
+      <select id="account_id" name="account_id" data-acb-toggle="#bv-group">
         {% for account in accounts %}
-          <option value="{{ account.id }}" {% if account.id == holding.account_id %}selected{% endif %}>{{ account.name }}</option>
+          <option value="{{ account.id }}" data-registered="{{ 1 if account.is_registered else 0 }}" {% if account.id == holding.account_id %}selected{% endif %}>{{ account.name }}{% if account.is_registered %} (registered){% endif %}</option>
         {% endfor %}
       </select>
     </div>
@@ -38,13 +38,15 @@
   </div>
   <p class="help" style="margin: -0.5rem 0 1rem;">Changing the price changes it for every holding of this security.</p>
 
-  <div class="form-group">
+  <div class="form-group {{ 'hidden' if holding.account.is_registered }}" id="bv-group">
     <label for="book_value">Book value / ACB (total, {{ holding.security.currency }})</label>
     <input type="number" step="0.01" id="book_value" name="book_value"
            value="{{ '%.2f'|format(holding.book_value) if holding.book_value is not none else '' }}"
            placeholder="Leave blank if unknown">
-    <small>{% if holding.account.is_registered %}Not needed in a registered account.{% else %}Used to estimate capital gains when selling in this taxable account. Same currency as the price.{% endif %}</small>
+    <small>Used to estimate capital gains when selling in a taxable account. Same currency as the price.</small>
   </div>
+  <p class="help {{ 'hidden' if not holding.account.is_registered }}" id="bv-none" style="margin: -0.25rem 0 1rem;">
+    Book value isn't tracked in registered accounts.</p>
 
   <div class="form-group">
     <label for="notes">Notes</label>

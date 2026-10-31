@@ -240,12 +240,22 @@ def edit_account(account_id):
     if not name:
         flash('Account name is required', 'error')
         return redirect(url_for('accounts'))
+    was_registered = bool(account.is_registered)
     account.name = name
     account.account_type = request.form.get('account_type') or None
     account.currency = request.form.get('currency', account.currency or 'CAD')
     account.is_registered = registered_flag(account.account_type, request.form.get('is_registered'))
+    cleared = 0
+    if account.is_registered and not was_registered:
+        for h in account.holdings:          # ACB has no meaning once sheltered
+            if h.book_value is not None:
+                h.book_value, cleared = None, cleared + 1
     db.session.commit()
-    flash(f'Account "{name}" saved.', 'success')
+    flash(f'Account "{name}" saved.' + (f' Cleared book value on {cleared} holding(s) – not tracked in '
+                                         'registered accounts.' if cleared else ''), 'success')
+    if was_registered and not account.is_registered and account.holdings:
+        flash(f'{name} is now taxable: enter the book value (ACB) of its {len(account.holdings)} holding(s) on the '
+              'Holdings page, or the rebalancer will treat any sale there as all gain.', 'warning')
     return redirect(url_for('accounts'))
 
 
@@ -366,7 +376,8 @@ def edit_holding(holding_id):
         holding.price = sec.last_price or new_price
         holding.notes = request.form.get('notes')
         book_value = request.form.get('book_value', '').strip()
-        holding.book_value = float(book_value) if book_value else None
+        target = db.session.get(Account, holding.account_id)
+        holding.book_value = float(book_value) if (book_value and not target.is_registered) else None
         db.session.commit()
         flash('Holding updated successfully.', 'success')
         return redirect(url_for('holdings'))
@@ -1012,11 +1023,10 @@ def receive_redemption(redemption_id):
     base = P.base_currency or 'CAD'
     # Book value leaves with the units (average cost); taxable accounts record the gain.
     gain_base = None
-    if holding.book_value is not None and holding.quantity > 0:
+    if not account.is_registered and holding.book_value is not None and holding.quantity > 0:
         acb = holding.book_value * r.quantity / holding.quantity
         holding.book_value -= acb
-        if not account.is_registered:
-            gain_base = convert_to_base(proceeds - acb, sec.currency, base, fx)
+        gain_base = convert_to_base(proceeds - acb, sec.currency, base, fx)
     holding.quantity -= r.quantity
     if holding.quantity <= 1e-9:
         db.session.delete(holding)
@@ -1078,11 +1088,11 @@ def execute_rebalance_transaction(transaction_id):
                     f'{holding.quantity if holding else 0}, need {txn.quantity}'
                 )
             # Average-cost ACB: the sold fraction of book value leaves with the shares.
-            if holding.book_value is not None and holding.quantity > 0:
+            # ACB is only tracked in taxable accounts.
+            if not account.is_registered and holding.book_value is not None and holding.quantity > 0:
                 acb_sold = holding.book_value * (txn.quantity / holding.quantity)
                 holding.book_value -= acb_sold
-                if not account.is_registered:
-                    txn.realized_gain = convert_to_base(txn.amount - acb_sold, sec_ccy, base, fx)
+                txn.realized_gain = convert_to_base(txn.amount - acb_sold, sec_ccy, base, fx)
             holding.quantity -= txn.quantity
             if holding.quantity <= 1e-9:
                 db.session.delete(holding)
@@ -1095,7 +1105,7 @@ def execute_rebalance_transaction(transaction_id):
                 )
             if holding:
                 holding.quantity += txn.quantity
-                if holding.book_value is not None:
+                if holding.book_value is not None and not account.is_registered:
                     holding.book_value += txn.amount
             else:
                 db.session.add(Holding(
@@ -1103,7 +1113,7 @@ def execute_rebalance_transaction(transaction_id):
                     security_id=txn.security_id,
                     quantity=txn.quantity,
                     price=txn.price,
-                    book_value=txn.amount,
+                    book_value=None if account.is_registered else txn.amount,
                 ))
             account.cash_balance = (account.cash_balance or 0) - amount_acct
         txn.executed = True

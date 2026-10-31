@@ -59,6 +59,7 @@ def run_all():
     replace_global_uniques()          # before the repair: it may clone tickers/names
     repair_cross_portfolio_refs()
     add_portfolio_indexes()
+    clear_registered_book_values()
 
 
 # --------------------------------------------------------------------------- #
@@ -232,3 +233,18 @@ def add_portfolio_indexes():
             if {'portfolio_id'} <= {c['name'] for c in insp.get_columns(table)}:
                 conn.execute(text(f'CREATE INDEX IF NOT EXISTS ix_{table}_portfolio_id '
                                   f'ON {table} (portfolio_id)'))
+
+
+def clear_registered_book_values():
+    """Book value (ACB) has no tax meaning in a registered account and isn't tracked
+    there any more; clear old values so a stale number can't resurface if the account
+    is later reclassified as taxable. Idempotent."""
+    from models import Account, Holding
+    ids = [a for (a,) in db.session.query(Account.id).filter(Account.is_registered.is_(True))]
+    if not ids:
+        return
+    n = (Holding.query.filter(Holding.account_id.in_(ids), Holding.book_value.isnot(None))
+         .update({'book_value': None}, synchronize_session=False))
+    if n:
+        db.session.commit()
+        log.info('Migrated: cleared book value on %d holding(s) in registered accounts', n)
