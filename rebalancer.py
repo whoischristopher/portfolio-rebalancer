@@ -21,7 +21,8 @@ import logging
 from datetime import datetime, timedelta
 
 from extensions import db
-from models import Account, Holding, RebalanceTransaction, Security, SecurityPreference, Target
+from models import (Account, Holding, PendingRedemption, RebalanceTransaction, Security,
+                    SecurityPreference, Target)
 from services.fx import convert_to_base, get_exchange_rates
 from services.optimizer import AccountIn, PositionIn, Problem, SecurityIn, solve
 
@@ -97,15 +98,25 @@ def build_problem(user, exchange_rates, allow_taxable_sells: bool) -> tuple[Prob
         cash=convert_to_base(a.cash_balance or 0.0, a.currency or base, base, exchange_rates),
     ) for a in accounts]
 
+    # Units with a redemption request filed are on their way out: plan as if gone.
+    pending = {}
+    for r in PendingRedemption.query.filter_by(user_id=user.id, status="pending").all():
+        pending[(r.account_id, r.security_id)] = pending.get((r.account_id, r.security_id), 0.0) + r.quantity
     pos_in = []
     for acc in accounts:
         for h in acc.holdings:
+            q = h.quantity - pending.get((acc.id, h.security_id), 0.0)
+            if q <= 1e-9:
+                continue
             # Book value is stored in the security's currency; the optimiser works in base.
             bv = None if h.book_value is None else convert_to_base(
-                h.book_value, h.security.currency, base, exchange_rates)
+                h.book_value * q / h.quantity, h.security.currency, base, exchange_rates)
             pos_in.append(PositionIn(
-                account_id=acc.id, security_id=h.security_id, quantity=h.quantity, book_value=bv,
+                account_id=acc.id, security_id=h.security_id, quantity=q, book_value=bv,
             ))
+    if pending:
+        notes.append("Units with a pending redemption request are left out of this plan "
+                     "(treated as already redeemed).")
 
     since = datetime.utcnow() - timedelta(days=SUPERFICIAL_LOSS_DAYS)
     recent = RebalanceTransaction.query.filter(
@@ -176,6 +187,45 @@ def _to_transactions(user, result) -> list:
     return txns
 
 
+def redemption_options(user, result, problem, exchange_rates) -> list:
+    """Turn per-class redemption amounts into concrete holdings to redeem from.
+    Registered accounts first (no tax on redemption), then the taxable lots with the
+    smallest gain per dollar; within that, larger holdings first."""
+    base = user.base_currency or "CAD"
+    pending = {}
+    for r in PendingRedemption.query.filter_by(user_id=user.id, status="pending").all():
+        pending[(r.account_id, r.security_id)] = pending.get((r.account_id, r.security_id), 0.0) + r.quantity
+    out = []
+    for k, amount in result.redemptions.items():
+        holdings = []
+        for acc in Account.query.filter_by(user_id=user.id).all():
+            for h in acc.holdings:
+                sec = h.security
+                if sec.asset_class_id != k or not sec.is_illiquid:
+                    continue
+                avail = h.quantity - pending.get((acc.id, sec.id), 0.0)
+                price = sec.last_price or h.price
+                if avail <= 1e-9 or not price:
+                    continue
+                price_b = convert_to_base(price, sec.currency, base, exchange_rates)
+                gain_frac = 0.0
+                if not acc.is_registered:
+                    gain_frac = 1.0 if h.book_value is None else max(0.0, 1 - h.book_value / (h.quantity * price))
+                holdings.append(dict(account_id=acc.id, account=acc.name, security_id=sec.id, ticker=sec.ticker,
+                                     available=round(avail, 4), price=price, currency=sec.currency,
+                                     price_base=price_b, registered=bool(acc.is_registered), gain_frac=gain_frac))
+        holdings.sort(key=lambda o: (not o["registered"], o["gain_frac"], -o["available"] * o["price_base"]))
+        left = amount
+        for o in holdings:
+            units = min(o["available"], left / o["price_base"]) if left > 1 else 0.0
+            o["suggested_units"] = round(units, 4)
+            o["suggested_value"] = round(units * o["price"], 2)
+            left -= units * o["price_base"]
+        out.append({"asset_class": problem.class_names[k], "amount": round(amount, 2),
+                    "holdings": [o for o in holdings if o["suggested_units"] > 0]})
+    return out
+
+
 def generate_plan(user, taxable_override: str | None = None) -> tuple[list, dict]:
     """Solve, persist the plan, and return (transactions, summary)."""
     mode = taxable_override or user.taxable_sell_mode or "ask"
@@ -190,6 +240,7 @@ def generate_plan(user, taxable_override: str | None = None) -> tuple[list, dict
     summary = _summarise(result, problem)
     summary["mode"] = mode
     summary["notes"] = notes + summary["notes"]
+    summary["redemptions"] = redemption_options(user, result, problem, fx)
 
     # Ask mode: would allowing taxable sells fix what's left?
     if mode == "ask" and result.out_of_band:

@@ -13,6 +13,74 @@
     </form>
 </div>
 
+{% if plan and plan.redemptions %}
+<div class="card" style="border-left: 5px solid #e67e22; background: #fff8f0;">
+    <h2 style="color: #d35400;">⚠️ Action needed: file a redemption request</h2>
+    <p style="color: #555;">These holdings can't be sold on demand, and they put their asset class beyond your
+        {{ "%.2f"|format(balanced_threshold) }}-point band. File a redemption request with the provider, then record it
+        here: the units are left out of planning until the money arrives, so the rest of the portfolio is ready for it.</p>
+    {% for r in plan.redemptions %}
+    <h3 style="font-size: 1rem; margin-top: 1rem;">{{ r.asset_class }} &ndash; redeem about {{ base_currency }} ${{ "{:,.0f}".format(r.amount) }}</h3>
+    <table>
+        <thead><tr><th>Account</th><th>Security</th><th class="text-right">Available units</th><th class="text-right">Suggested units</th><th class="text-right">≈ Value</th><th>Record request</th></tr></thead>
+        <tbody>
+        {% for o in r.holdings %}
+        <tr>
+            <td>{{ o.account }}{% if not o.registered %} <span style="font-size:0.75rem;color:#e67e22">(taxable)</span>{% endif %}</td>
+            <td><strong>{{ o.ticker }}</strong></td>
+            <td class="text-right">{{ "{:,.4f}".format(o.available) }}</td>
+            <td class="text-right">{{ "{:,.4f}".format(o.suggested_units) }}</td>
+            <td class="text-right">{{ o.currency }} ${{ "{:,.0f}".format(o.suggested_value) }}</td>
+            <td>
+                <form method="POST" action="{{ url_for('add_redemption') }}" style="display:flex; gap:0.4rem; align-items:center; flex-wrap:wrap;">
+                    <input type="hidden" name="account_id" value="{{ o.account_id }}">
+                    <input type="hidden" name="security_id" value="{{ o.security_id }}">
+                    <input type="number" step="0.0001" min="0" max="{{ o.available }}" name="quantity" value="{{ o.suggested_units }}" style="width: 8rem;" title="Units requested">
+                    <input type="date" name="expected_on" title="Expected payout date (optional)">
+                    <button type="submit" class="btn btn-sm btn-primary">I've filed it</button>
+                </form>
+            </td>
+        </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% endfor %}
+</div>
+{% endif %}
+
+{% if pending_redemptions %}
+<div class="card">
+    <h2>Pending Redemptions</h2>
+    <p style="color: #7f8c8d;">Left out of planning until received. When the money arrives, enter the actual proceeds and mark it received: the units, book value, cash and (for taxable accounts) realised gain are updated in one step.</p>
+    <table>
+        <thead><tr><th>Account</th><th>Security</th><th class="text-right">Units</th><th>Requested</th><th>Expected</th><th>Received</th><th></th></tr></thead>
+        <tbody>
+        {% for r in pending_redemptions %}
+        <tr>
+            <td>{{ r.account.name }}</td>
+            <td><strong>{{ r.security.ticker }}</strong></td>
+            <td class="text-right">{{ "{:,.4f}".format(r.quantity) }}</td>
+            <td>{{ r.requested_on }}</td>
+            <td>{% if r.expected_on %}{{ r.expected_on }}{% if r.expected_on <= today %} <span style="color:#e67e22;font-weight:bold">– due</span>{% endif %}{% else %}—{% endif %}</td>
+            <td>
+                <form method="POST" action="{{ url_for('receive_redemption', redemption_id=r.id) }}" style="display:flex; gap:0.4rem; align-items:center;">
+                    <input type="number" step="0.01" min="0" name="proceeds" placeholder="Proceeds ({{ r.security.currency }})" style="width: 10rem;"
+                           title="Actual amount received; leave blank to use units × current price">
+                    <button type="submit" class="btn btn-sm btn-success" onclick="return confirm('Mark this redemption as received?');">Received</button>
+                </form>
+            </td>
+            <td>
+                <form method="POST" action="{{ url_for('cancel_redemption', redemption_id=r.id) }}">
+                    <button type="submit" class="btn btn-sm" onclick="return confirm('Cancel this redemption request?');">Cancel</button>
+                </form>
+            </td>
+        </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endif %}
+
 {% if plan %}
 <div class="card">
     <h2>Plan Outcome</h2>
@@ -84,7 +152,7 @@
             <li><strong>Capital gains</strong> realised by selling in non-registered accounts (using each holding's book value). Losses aren't penalised.</li>
             <li><strong>Number of trades</strong> (plus your per-trade cost from Settings).</li>
             <li><strong>Number of positions</strong> &ndash; new positions are discouraged, and a small, scattered position gets closed out when that's cheap.</li>
-            <li><strong>Illiquid holdings</strong> (marked on the Securities page) are never sold. If they alone put a class over target, that class's target is raised to match and the others are reduced proportionally.</li>
+            <li><strong>Illiquid holdings</strong> (marked on the Securities page) are never sold. If they alone put a class over target, that class's target is raised to match and the others are reduced proportionally. If that's beyond your band, the page asks you to file a redemption request; once you record it, those units are left out of planning until the money arrives.</li>
             <li><strong>Account priority</strong> from the Securities page &ndash; a preference, not a hard rule. Restrictions are hard rules.</li>
         </ol>
         <p><strong>Two stages:</strong> first the fewest, cheapest trades that bring every class inside its band (if everything is already inside, nothing is traded). Then those same trades &ndash; no more of them and no extra capital gain &ndash; are re-sized to land as close to target as possible, furthest-off classes first.</p>

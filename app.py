@@ -29,7 +29,7 @@ app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
 db.init_app(app)
 
 from models import User, Account, Holding, Security, SecurityPreference
-from models import Target, AssetClass, ExchangeRate, RebalanceTransaction
+from models import Target, AssetClass, ExchangeRate, RebalanceTransaction, PendingRedemption
 from auth import auth_bp, init_oauth
 from services.fx import get_exchange_rates
 from services.portfolio import (
@@ -137,6 +137,7 @@ def delete_account(account_id):
         return redirect(url_for('accounts'))
     # No FK cascade from transactions to accounts – remove them explicitly.
     RebalanceTransaction.query.filter_by(account_id=account.id).delete()
+    PendingRedemption.query.filter_by(account_id=account.id).delete()
     db.session.delete(account)
     db.session.commit()
     flash(f'Account "{account.name}" deleted successfully', 'success')
@@ -430,6 +431,7 @@ def edit_security(security_id):
 def delete_security(security_id):
     s = Security.query.get_or_404(security_id)
     RebalanceTransaction.query.filter_by(security_id=s.id, executed=False).delete()
+    PendingRedemption.query.filter_by(security_id=s.id).delete()
     db.session.delete(s)
     db.session.commit()
     flash(f'Deleted {s.ticker}.', 'success')
@@ -539,6 +541,9 @@ def rebalance():
         accounts=current_user.accounts,
         balanced_threshold=current_user.balanced_threshold,
         plan=_plan_summary(),
+        pending_redemptions=PendingRedemption.query.filter_by(
+            user_id=current_user.id, status='pending').order_by(PendingRedemption.requested_on).all(),
+        today=datetime.utcnow().date(),
     )
 
 
@@ -618,6 +623,116 @@ def generate_rebalance():
     except Exception as exc:
         log.exception('Error generating rebalance plan')
         flash(f'Error generating rebalance plan: {exc}', 'error')
+    return redirect(url_for('rebalance'))
+
+
+# ---------------------------------------------------------------------------
+# Routes – Pending redemptions (illiquid holdings)
+# ---------------------------------------------------------------------------
+def _regenerate_after_change(message):
+    try:
+        prev = _plan_summary() or {}
+        _regenerate_plan(prev.get('override'))
+        flash(message, 'success')
+    except Exception as exc:
+        log.exception('Plan regeneration failed: %s', exc)
+        db.session.rollback()
+        _discard_pending_plan()
+        flash(message + ' The plan could not be regenerated – click "Generate Rebalance Plan".', 'warning')
+
+
+def _parse_date(value):
+    try:
+        return datetime.strptime(value, '%Y-%m-%d').date() if value else None
+    except ValueError:
+        return None
+
+
+@app.route('/redemptions/add', methods=['POST'])
+@login_required
+def add_redemption():
+    account = Account.query.get_or_404(int(request.form['account_id']))
+    if account.user_id != current_user.id:
+        flash('Unauthorized', 'error')
+        return redirect(url_for('rebalance'))
+    security_id = int(request.form['security_id'])
+    holding = Holding.query.filter_by(account_id=account.id, security_id=security_id).first()
+    try:
+        units = float(request.form.get('quantity') or 0)
+    except ValueError:
+        units = 0
+    already = sum(r.quantity for r in PendingRedemption.query.filter_by(
+        account_id=account.id, security_id=security_id, status='pending'))
+    if not holding or units <= 0 or units > holding.quantity - already + 1e-6:
+        flash('Redemption quantity must be more than 0 and no more than the units not already being redeemed.',
+              'error')
+        return redirect(url_for('rebalance'))
+    db.session.add(PendingRedemption(
+        user_id=current_user.id, account_id=account.id, security_id=security_id, quantity=units,
+        requested_on=_parse_date(request.form.get('requested_on')) or datetime.utcnow().date(),
+        expected_on=_parse_date(request.form.get('expected_on')),
+    ))
+    db.session.commit()
+    _regenerate_after_change(f'Recorded redemption request: {units:g} units of {holding.security.ticker} '
+                             f'in {account.name}. Those units are now left out of the plan.')
+    return redirect(url_for('rebalance'))
+
+
+@app.route('/redemptions/<int:redemption_id>/receive', methods=['POST'])
+@login_required
+def receive_redemption(redemption_id):
+    r = PendingRedemption.query.get_or_404(redemption_id)
+    if r.user_id != current_user.id or r.status != 'pending':
+        flash('Redemption not found', 'error')
+        return redirect(url_for('rebalance'))
+    account, sec = r.account, r.security
+    holding = Holding.query.filter_by(account_id=r.account_id, security_id=r.security_id).first()
+    if not holding or holding.quantity < r.quantity - 1e-6:
+        flash(f'You no longer hold {r.quantity:g} units of {sec.ticker} in {account.name} – '
+              'update the holding first.', 'error')
+        return redirect(url_for('rebalance'))
+    try:
+        proceeds = float(request.form.get('proceeds') or 0) or r.quantity * (sec.last_price or holding.price)
+    except ValueError:
+        flash('Proceeds must be a number', 'error')
+        return redirect(url_for('rebalance'))
+    fx = get_exchange_rates(current_user)
+    base = current_user.base_currency or 'CAD'
+    # Book value leaves with the units (average cost); taxable accounts record the gain.
+    gain_base = None
+    if holding.book_value is not None and holding.quantity > 0:
+        acb = holding.book_value * r.quantity / holding.quantity
+        holding.book_value -= acb
+        if not account.is_registered:
+            gain_base = convert_to_base(proceeds - acb, sec.currency, base, fx)
+    holding.quantity -= r.quantity
+    if holding.quantity <= 1e-9:
+        db.session.delete(holding)
+    account.cash_balance = (account.cash_balance or 0) + convert_to_base(
+        proceeds, sec.currency, account.currency or base, fx)
+    # Keep a record like any other sale (also feeds the superficial-loss check).
+    db.session.add(RebalanceTransaction(
+        user_id=current_user.id, account_id=account.id, security_id=sec.id, action='SELL',
+        quantity=r.quantity, price=proceeds / r.quantity, amount=proceeds, currency=sec.currency,
+        executed=True, executed_at=datetime.utcnow(), realized_gain=gain_base, execution_order=0,
+    ))
+    r.status, r.received_on, r.proceeds = 'received', datetime.utcnow().date(), proceeds
+    db.session.commit()
+    _regenerate_after_change(f'Redemption of {sec.ticker} received: {proceeds:,.2f} {sec.currency} '
+                             f'added to {account.name} cash.')
+    return redirect(url_for('rebalance'))
+
+
+@app.route('/redemptions/<int:redemption_id>/cancel', methods=['POST'])
+@login_required
+def cancel_redemption(redemption_id):
+    r = PendingRedemption.query.get_or_404(redemption_id)
+    if r.user_id != current_user.id or r.status != 'pending':
+        flash('Redemption not found', 'error')
+        return redirect(url_for('rebalance'))
+    r.status = 'cancelled'
+    db.session.commit()
+    _regenerate_after_change(f'Redemption request for {r.security.ticker} cancelled.')
     return redirect(url_for('rebalance'))
 
 
