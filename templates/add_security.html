@@ -1,73 +1,54 @@
 {% extends "base.html" %}
-
-{% block title %}Add Security - Portfolio Rebalancer{% endblock %}
+{% block title %}Add security – Portfolio Rebalancer{% endblock %}
 
 {% block content %}
-<h1 style="margin-bottom: 2rem;">Add New Security</h1>
+<div class="page-head">
+    <div>
+        <h1>Add a security</h1>
+        <p>Tip: you can also create securities while entering holdings – just type a new ticker there.</p>
+    </div>
+</div>
 
-<div class="card">
+<div class="card" style="max-width: 720px;">
     <form method="POST">
-        <div class="form-group">
-            <label for="ticker">Ticker Symbol</label>
-            <input type="text" name="ticker" id="ticker" required placeholder="e.g., VTI, XIC.TO">
+        <div class="field-grid" style="grid-template-columns: 1fr 2fr;">
+            <div class="form-group">
+                <label for="ticker">Ticker</label>
+                <input type="text" name="ticker" id="ticker" required placeholder="e.g. XEQT, VTI" autocapitalize="characters">
+            </div>
+            <div class="form-group">
+                <label for="name">Name</label>
+                <input type="text" name="name" id="name" placeholder="e.g. iShares Core Equity ETF Portfolio">
+            </div>
+        </div>
+        <div class="field-grid" style="grid-template-columns: 2fr 1fr 1fr; margin-top: 1rem;">
+            <div class="form-group">
+                <label for="asset_class_name">Asset class</label>
+                <input type="text" name="asset_class_name" id="asset_class_name" list="ac-list" required placeholder="Pick or type a new one" autocomplete="off">
+                <datalist id="ac-list">{% for ac in asset_classes %}<option value="{{ ac.name }}"></option>{% endfor %}</datalist>
+            </div>
+            <div class="form-group">
+                <label for="currency">Currency</label>
+                <select name="currency" id="currency">{% for c in currencies %}<option value="{{ c }}">{{ c }}</option>{% endfor %}</select>
+            </div>
+            <div class="form-group">
+                <label for="price">Price</label>
+                <input type="number" step="0.0001" min="0" id="price" name="price" placeholder="Optional">
+            </div>
+        </div>
+        <p class="help" style="margin: 0.5rem 0 1.25rem;">One price per security – every holding of it uses this price. Leave blank if your price sheet covers it.</p>
+
+        <div class="stack" style="margin-bottom: 1.5rem;">
+            <label class="check"><input type="checkbox" name="is_public" checked> Traded on an exchange</label><br>
+            <label class="check"><input type="checkbox" name="auto_update_price" checked> Update the price from my price sheet</label><br>
+            <label class="check"><input type="checkbox" name="is_illiquid"> Can't be sold on demand (illiquid)</label>
+            <small class="help">For private funds and similar: the rebalancer will still buy it but never sells it. If it's over target, the other targets shrink to compensate.</small>
         </div>
 
-        <div class="form-group">
-            <label for="name">Security Name</label>
-            <input type="text" name="name" id="name" placeholder="e.g., Vanguard Total Stock Market ETF">
-        </div>
-
-        <div class="form-group">
-            <label for="asset_class_id">Asset Class</label>
-            <select name="asset_class_id" id="asset_class_id" required>
-                <option value="">Select Asset Class</option>
-                {% for ac in asset_classes %}
-                    <option value="{{ ac.id }}">{{ ac.name }}</option>
-                {% endfor %}
-            </select>
-        </div>
-
-        <div class="form-group">
-            <label for="currency">Currency</label>
-            <select name="currency" id="currency">
-                <option value="CAD">CAD</option>
-                <option value="USD">USD</option>
-            </select>
-        </div>
-
-        <div class="form-group">
-            <label for="price">Price (security currency)</label>
-            <input type="number" step="0.0001" min="0" id="price" name="price" value="" placeholder="Filled by Update Prices">
-            <small style="color: #7f8c8d;">One price per security – every holding of it uses this price. Set it here for private securities or to override.</small>
-        </div>
-
-        <div class="form-group">
-            <label>
-                <input type="checkbox" name="is_public" checked>
-                Public Security (traded on exchange)
-            </label>
-        </div>
-
-        <div class="form-group">
-            <label>
-                <input type="checkbox" name="auto_update_price" checked>
-                Auto-update price from my price sheet
-            </label>
-        </div>
-
-        <div class="form-group">
-            <label>
-                <input type="checkbox" name="is_illiquid" >
-                Can't be sold on demand (illiquid)
-            </label>
-            <small style="display:block; color: #7f8c8d;">For private funds and similar: the rebalancer will still buy it, but never sells it. If it's over target, the other targets are reduced to compensate.</small>
-        </div>
-
-        <div style="display: flex; gap: 1rem; margin-top: 1.5rem;">
-            <button type="submit" class="btn btn-primary">Add Security</button>
-            <a href="{{ url_for('securities') }}" class="btn btn-secondary">Cancel</a>
+        <div class="btn-row">
+            <button type="submit" class="btn btn-primary">Add security</button>
+            <a href="{{ url_for('securities') }}" class="btn btn-ghost">Cancel</a>
         </div>
     </form>
 </div>
 {% endblock %}
-

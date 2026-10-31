@@ -1,64 +1,122 @@
 {% extends "base.html" %}
-
-{% block title %}Dashboard - Portfolio Rebalancer{% endblock %}
+{% block title %}Dashboard – Portfolio Rebalancer{% endblock %}
 
 {% block content %}
-<h1 style="margin-bottom: 2rem;">Dashboard</h1>
+{% set cash_total = namespace(v=0) %}
+{% for a in accounts %}{% set cash_total.v = cash_total.v + ((a.cash_balance or 0) * (exchange_rates.get(a.currency ~ '_TO_' ~ base_currency, 1.0) if a.currency != base_currency else 1.0)) %}{% endfor %}
 
+<div class="page-head">
+    <div>
+        <h1>{{ active_portfolio.name }}</h1>
+    </div>
+    {% if status.complete %}
+    <div class="page-actions">
+        <a href="{{ url_for('holdings') }}" class="btn btn-secondary">Holdings</a>
+        <form method="POST" action="{{ url_for('generate_rebalance') }}"><button type="submit" class="btn btn-primary">Generate rebalancing plan</button></form>
+    </div>
+    {% endif %}
+</div>
+
+{% if not status.complete %}
 <div class="card">
-    <h2>Portfolio Summary</h2>
-    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 2rem; margin-top: 1.5rem;">
+    <div class="card-head">
         <div>
-            <h3 style="color: #7f8c8d; font-size: 0.9rem; font-weight: normal;">Total Value</h3>
-            <p style="font-size: 2rem; color: #2c3e50; font-weight: bold;">${{ "{:,.2f}".format(total_value) }}</p>
+            <h2>{{ 'Get this portfolio set up' if not accounts else 'Finish setting up' }}</h2>
+            <p class="card-sub">{{ status.done_count }} of {{ status.steps|length }} done. The quick start covers the rest in a few minutes.</p>
+        </div>
+        <a href="{{ url_for('setup') }}" class="btn btn-primary">{{ 'Start quick setup' if status.done_count == 0 else 'Continue setup' }}</a>
+    </div>
+    <ul class="checklist">
+        {% for s in status.steps %}
+        <li><span class="tick {{ 'done' if s.done }}"></span><span>{{ s.label }}</span><span class="detail">{{ s.detail }}</span></li>
+        {% endfor %}
+    </ul>
+</div>
+{% endif %}
+
+{% if accounts %}
+<div class="card">
+    <div class="stats">
+        <div>
+            <div class="stat-label">Total value</div>
+            <div class="stat-value big num">{{ '{:,.0f}'.format(total_value) }} <small>{{ base_currency }}</small></div>
         </div>
         <div>
-            <h3 style="color: #7f8c8d; font-size: 0.9rem; font-weight: normal;">Accounts</h3>
-            <p style="font-size: 2rem; color: #3498db; font-weight: bold;">{{ accounts|length }}</p>
+            <div class="stat-label">Cash</div>
+            <div class="stat-value num">{{ '{:,.0f}'.format(cash_total.v) }} <small>{{ '%.1f'|format(cash_total.v / total_value * 100 if total_value else 0) }}%</small></div>
         </div>
         <div>
-            <h3 style="color: #7f8c8d; font-size: 0.9rem; font-weight: normal;">Asset Classes</h3>
-            <p style="font-size: 2rem; color: #2ecc71; font-weight: bold;">{{ targets|length }}</p>
+            <div class="stat-label">Accounts</div>
+            <div class="stat-value num">{{ accounts|length }}</div>
+        </div>
+        <div>
+            <div class="stat-label">Current plan</div>
+            <div class="stat-value num">{% if plan and plan.trades is defined %}{{ plan.trades }} <small>trade{{ 's' if plan.trades != 1 }}</small>{% else %}<small>None yet</small>{% endif %}</div>
         </div>
     </div>
 </div>
+{% endif %}
 
+{% if allocation_rows %}
+{% set ns = namespace(scale=1) %}
+{% for r in allocation_rows %}{% set ns.scale = [ns.scale, r.current, r.target + band]|max %}{% endfor %}
+{% set scale = [ns.scale * 1.15, 100]|min %}
 <div class="card">
-    <h2>Recent Accounts</h2>
-    {% if accounts %}
+    <div class="card-head">
+        <div>
+            <h2>Allocation against target</h2>
+            <p class="card-sub">The shaded band is ±{{ band|round(2) }} points around each target – inside it, the rebalancer leaves things alone.</p>
+        </div>
+        <a href="{{ url_for('targets') }}" class="btn btn-ghost btn-sm">Edit targets</a>
+    </div>
+    <div class="alloc">
+        {% for r in allocation_rows %}
+        {% set diff = r.current - r.target %}
+        {% set state = 'within' if (diff|abs) <= band else ('over' if diff > 0 else 'under') %}
+        <div class="alloc-row">
+        <div class="alloc-name">{{ r.name }}<span class="sub num">{{ base_currency }} {{ '{:,.0f}'.format(r.value) }}</span></div>
+        <div class="track" role="img" aria-label="{{ r.name }}: {{ '%.1f'|format(r.current) }}% now, target {{ '%g'|format(r.target) }}%">
+            <div class="track-band" style="left: {{ ([r.target - band, 0]|max) / scale * 100 }}%; width: {{ (([r.target + band, scale]|min) - ([r.target - band, 0]|max)) / scale * 100 }}%;"></div>
+            <div class="track-fill {{ state }}" style="width: {{ ([r.current, scale]|min) / scale * 100 }}%;"></div>
+            <div class="track-target" style="left: calc({{ r.target / scale * 100 }}% - 1px);"></div>
+        </div>
+        <div class="alloc-figs num">
+            <strong>{{ '%.1f'|format(r.current) }}%</strong> <span class="muted">of {{ '%g'|format(r.target) }}%</span>
+            <span class="diff {{ 'negative' if state == 'over' else ('positive' if state == 'within' else '') }}">
+                {% if state == 'within' %}within band{% else %}{{ '%+.1f'|format(diff) }} pts{% endif %}
+            </span>
+        </div>
+        </div>
+        {% endfor %}
+    </div>
+    <div class="alloc-legend">
+        <span><i style="background: var(--accent);"></i>Within band</span>
+        <span><i style="background: #B5762A;"></i>Over target</span>
+        <span><i style="background: #6F8A82;"></i>Under target</span>
+        <span><i style="background: var(--accent); width: 2px; height: 12px;"></i>Target</span>
+    </div>
+</div>
+{% endif %}
+
+{% if accounts %}
+<div class="card flush">
+    <div class="card-head"><h2>Accounts</h2><a href="{{ url_for('accounts') }}" class="btn btn-ghost btn-sm">Manage accounts</a></div>
+    <div class="table-wrap">
     <table>
-        <thead>
-            <tr>
-                <th>Account Name</th>
-                <th>Type</th>
-                <th>Holdings</th>
-                <th>Total Value</th>
-            </tr>
-        </thead>
+        <thead><tr><th>Account</th><th>Type</th><th class="text-right">Holdings</th><th class="text-right">Cash</th><th class="text-right">Holdings ({{ base_currency }})</th></tr></thead>
         <tbody>
-            {% for account in accounts[:5] %}
+            {% for account in accounts %}
             <tr>
-                <td><strong>{{ account.name }}</strong></td>
-                <td>{{ account.account_type or 'N/A' }}</td>
-                <td>{{ account.holdings|length }}</td>
-                <td>{{ base_currency }} ${{ "{:,.2f}".format(account.total_value_in_base_currency(exchange_rates)) }}</td>
+                <td><a href="{{ url_for('holdings') }}#account-{{ account.id }}"><strong>{{ account.name }}</strong></a></td>
+                <td>{{ account.account_type or '—' }} {% if account.is_registered %}<span class="badge badge-accent">Registered</span>{% endif %}</td>
+                <td class="text-right num">{{ account.holdings|length }}</td>
+                <td class="text-right num">{{ '{:,.2f}'.format(account.cash_balance or 0) }} <span class="faint">{{ account.currency }}</span></td>
+                <td class="text-right num">{{ '{:,.2f}'.format(account.total_value_in_base_currency(exchange_rates)) }}</td>
             </tr>
             {% endfor %}
         </tbody>
     </table>
-    {% else %}
-    <p style="color: #7f8c8d; margin-top: 1rem;">No accounts yet. <a href="{{ url_for('accounts') }}">Add your first account</a></p>
-    {% endif %}
-</div>
-
-<div class="card">
-    <h2>Quick Actions</h2>
-    <div style="display: flex; gap: 1rem; margin-top: 1rem; flex-wrap: wrap;">
-        <a href="{{ url_for('accounts') }}" class="btn btn-primary">Manage Accounts</a>
-        <a href="{{ url_for('holdings') }}" class="btn btn-primary">View Holdings</a>
-        <a href="{{ url_for('targets') }}" class="btn btn-primary">Set Targets</a>
-        <a href="{{ url_for('rebalance') }}" class="btn btn-primary">Rebalance Portfolio</a>
     </div>
 </div>
+{% endif %}
 {% endblock %}
-

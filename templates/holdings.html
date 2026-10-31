@@ -1,184 +1,114 @@
 {% extends "base.html" %}
-{% block title %}Holdings - Portfolio Rebalancer{% endblock %}
+{% import "_entry.html" as E with context %}
+{% block title %}Holdings – Portfolio Rebalancer{% endblock %}
 
 {% block content %}
-<h1 style="margin-bottom: 2rem;">Holdings</h1>
-
-<!-- Add new holding form as before -->
-<div class="card">
-  <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
-    <h2>Add New Holding</h2>
-    <form method="POST" action="{{ url_for('update_prices') }}" style="display: inline;">
-      <button type="submit" class="btn btn-primary">🔄 Update Prices from Market</button>
-    </form>
-  </div>
-
-  <form method="POST" action="{{ url_for('add_holding') }}">
-    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 1rem;">
-      <!-- Stay the same as before -->
-      <div class="form-group">
-        <label for="account_id">Account</label>
-        <select id="account_id" name="account_id" required>
-          <option value="">Select Account</option>
-          {% for account in accounts %}
-            <option value="{{ account.id }}">{{ account.name }}</option>
-          {% endfor %}
-        </select>
-      </div>
-      <div class="form-group">
-        <label for="security_id">Security</label>
-        <select name="security_id" id="security_id" required>
-          <option value="">Select Security</option>
-          {% for sec in securities %}
-            <option value="{{ sec.id }}">{{ sec.ticker }} - {{ sec.name }}</option>
-          {% endfor %}
-        </select>
-      </div>
-      <div class="form-group">
-        <label for="quantity">Quantity</label>
-        <input type="number" step="0.001" id="quantity" name="quantity" required placeholder="100">
-      </div>
-      <div class="form-group">
-        <label for="price">Price (optional)</label>
-        <input type="number" step="0.0001" id="price" name="price" placeholder="Uses the security's price">
-      </div>
-      <div class="form-group">
-        <label for="book_value">Book Value / ACB (security currency, optional)</label>
-        <input type="number" step="0.01" id="book_value" name="book_value" placeholder="Total cost, non-registered only">
-      </div>
+<div class="page-head">
+    <div>
+        <h1>Holdings</h1>
+        <p>Add holdings by ticker in each account. A ticker you haven't used yet becomes a new security on the spot.</p>
     </div>
-    <button type="submit" class="btn btn-success">Add Holding</button>
-  </form>
+    <div class="page-actions">
+        <form method="POST" action="{{ url_for('update_prices') }}">
+            <button type="submit" class="btn btn-secondary">Update prices</button>
+        </form>
+    </div>
 </div>
 
-<!-- Holdings per Account -->
+{{ E.entry_datalists(securities, asset_classes) }}
+
 {% for account in accounts %}
-<div class="card">
-  <h2>{{ account.name }} 
-    <span style="color: #7f8c8d; font-size: 0.9rem;">
-      ({{ account.account_type or 'N/A' }}, {{ account.currency }}
-      {% if account.is_registered %}, Registered{% endif %})
-    </span>
-  </h2>
+{% set total_base = account.total_value_in_base_currency(exchange_rates) %}
+<section class="card flush account-card" id="account-{{ account.id }}">
+    <div class="card-head">
+        <div>
+            <h2>{{ account.name }}</h2>
+            <div class="account-meta">
+                {{ account.account_type or 'Account' }}, {{ account.currency }}
+                {% if account.is_registered %}<span class="badge badge-accent">Registered</span>{% else %}<span class="badge">Taxable</span>{% endif %}
+            </div>
+        </div>
+        <div class="btn-row">
+            <form method="POST" action="{{ url_for('update_cash_balance', account_id=account.id) }}" class="inline-cash">
+                <label for="cash-{{ account.id }}" class="muted small">Cash</label>
+                <input type="number" step="0.01" id="cash-{{ account.id }}" name="cash_balance" value="{{ '%.2f'|format(account.cash_balance or 0) }}">
+                <span class="muted small">{{ account.currency }}</span>
+                <button type="submit" class="btn btn-ghost btn-sm">Save</button>
+            </form>
+            <button type="button" class="btn btn-primary btn-sm" data-toggle="#entry-{{ account.id }}">Add holdings</button>
+        </div>
+    </div>
 
-  <!-- CASH SECTION -->
-  <div style="background: #f8f9fa; padding: 1rem; border-radius: 4px; margin-bottom: 1rem;">
-    <form method="POST" action="{{ url_for('update_cash_balance', account_id=account.id) }}" style="display: flex; align-items: center; gap: 1rem;">
-      <label style="margin: 0; font-weight: bold; color: #2c3e50;">Cash Balance:</label>
-      <input type="number" 
-             name="cash_balance" 
-             step="0.01" 
-             value="{{ account.cash_balance }}" 
-             placeholder="0.00"
-             style="width: 150px; padding: 0.5rem;">
-      <span>{{ account.currency }}</span>
-      <button type="submit" class="btn btn-sm btn-primary">Update Cash</button>
-    </form>
-  </div>
-  <!-- END CASH SECTION -->
+    {% if account.holdings %}
+    <div class="table-wrap">
+    <table>
+        <thead>
+            <tr>
+                <th>Security</th>
+                <th>Asset class</th>
+                <th class="text-right">Quantity</th>
+                <th class="text-right">Price</th>
+                <th class="text-right">Market value</th>
+                <th class="text-right">Value ({{ base_currency }})</th>
+                {% if not account.is_registered %}<th class="text-right" title="Total adjusted cost base, in the security's currency – used to estimate capital gains">Book value</th>{% endif %}
+                <th></th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for holding in account.holdings|sort(attribute='security.ticker') %}
+            <tr>
+                <td>
+                    <strong>{{ holding.security.ticker }}</strong>
+                    {% if holding.security.is_illiquid %}<span class="badge badge-illiquid" title="Can't be sold on demand – the rebalancer never sells it">illiquid</span>{% endif %}
+                    <span class="sub" title="{{ holding.security.name or '' }}">{{ holding.security.name or '' }}</span>
+                </td>
+                <td>{{ holding.security.asset_class.name if holding.security.asset_class else '—' }}</td>
+                <td class="text-right num">{{ '{:,.4f}'.format(holding.quantity).rstrip('0').rstrip('.') }}</td>
+                <td class="text-right num">{% if holding.price %}{{ '{:,.2f}'.format(holding.price) }} <span class="faint">{{ holding.currency }}</span>{% else %}<span class="badge badge-warn">no price</span>{% endif %}</td>
+                <td class="text-right num">{{ '{:,.2f}'.format(holding.market_value) }} <span class="faint">{{ holding.currency }}</span></td>
+                <td class="text-right num"><strong>{{ '{:,.2f}'.format(holding.market_value_in_base_currency(exchange_rates)) }}</strong></td>
+                {% if not account.is_registered %}
+                <td class="text-right num">
+                    {% if holding.book_value is not none %}{{ '{:,.2f}'.format(holding.book_value) }}
+                    {% else %}<span class="badge badge-warn" title="Missing – the rebalancer will assume the whole sale is gain">missing</span>{% endif %}
+                </td>
+                {% endif %}
+                <td class="actions-cell">
+                    <a href="{{ url_for('edit_holding', holding_id=holding.id) }}" class="btn btn-ghost btn-sm">Edit</a>
+                    <form method="POST" action="{{ url_for('delete_holding', holding_id=holding.id) }}" onsubmit="return confirm('Delete this {{ holding.security.ticker }} holding?');">
+                        <button type="submit" class="btn btn-ghost btn-sm">Delete</button>
+                    </form>
+                </td>
+            </tr>
+            {% endfor %}
+            <tr class="total-row">
+                <td colspan="5">Account total, including {{ '{:,.2f}'.format(account.cash_balance or 0) }} {{ account.currency }} cash</td>
+                <td class="text-right num">{{ '{:,.2f}'.format(total_base + ((account.cash_balance or 0) * (exchange_rates.get(account.currency ~ '_TO_' ~ base_currency, 1.0) if account.currency != base_currency else 1.0))) }}</td>
+                <td colspan="{{ 1 if account.is_registered else 2 }}"></td>
+            </tr>
+        </tbody>
+    </table>
+    </div>
+    {% else %}
+    <p class="muted" style="padding: 1rem 1.5rem 0;">Nothing in this account yet.</p>
+    {% endif %}
 
-  {% if account.holdings %}
-  <table>
-    <thead>
-      <tr>
-        <th>Ticker</th>
-        <th>Name</th>
-        <th>Asset Class</th>
-        <th>Type</th>
-        <th class="text-right">Quantity</th>
-        <th class="text-right">Price</th>
-        <th class="text-right">Market Value</th>
-        <th class="text-right">Value ({{ base_currency }})</th>
-        <th class="text-right" title="Total adjusted cost base, in the security's currency – used to estimate capital gains in non-registered accounts">Book Value</th>
-        <th>Notes</th>
-        <th>Last Updated</th>
-        <th>Actions</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for holding in account.holdings %}
-      <tr>
-        <td><strong>{{ holding.security.ticker if holding.security else holding.ticker }}</strong></td>
-        <td style="max-width: 150px; overflow: hidden; text-overflow: ellipsis;">
-          {{ holding.security.name if holding.security else holding.name or '-' }}
-        </td>
-        <td>{{ holding.security.asset_class.name if holding.security and holding.security.asset_class else holding.asset_class or '-' }}</td>
-
-        <td>
-          {% if holding.security and holding.security.is_public %}
-            <span style="color: #3498db;">Public</span>
-          {% else %}
-            <span style="color: #e67e22;">Private</span>
-          {% endif %}
-        </td>
-
-        <td class="text-right">{{ "%.3f"|format(holding.quantity) }}</td>
-        <td class="text-right">{{ holding.currency }} ${{ "{:,.2f}".format(holding.price) }}</td>
-        <td class="text-right"><strong>{{ holding.currency }} ${{ "{:,.2f}".format(holding.market_value) }}</strong></td>
-        <td class="text-right">
-          {{ base_currency }} ${{ "{:,.2f}".format(holding.market_value_in_base_currency(exchange_rates)) }}
-        </td>
-        <td class="text-right">
-          {% if holding.book_value is not none %}
-            {{ holding.currency }} ${{ "{:,.2f}".format(holding.book_value) }}
-          {% elif not holding.account.is_registered %}
-            <span style="color: #e67e22;" title="Missing – the rebalancer will assume the whole sale is gain">missing</span>
-          {% else %}
-            <span style="color: #bdc3c7;">—</span>
-          {% endif %}
-        </td>
-
-        <td>
-          {% if holding.security and holding.security.preferences %}
-            {{ holding.security.preferences[0].notes or '-' }}
-          {% else %}
-            -
-          {% endif %}
-        </td>
-
-        <td style="font-size: 0.85rem; color: #7f8c8d;">
-          {% if holding.updated_at %}
-            {{ holding.updated_at.strftime('%Y-%m-%d') }}
-          {% else %}
-            Never
-          {% endif %}
-        </td>
-
-        <td>
-          <form method="GET"
-                action="{{ url_for('edit_holding', holding_id=holding.id) }}"
-                style="display: inline;">
-            <button type="submit" class="btn btn-warning">Edit</button>
-          </form>
-          <form method="POST"
-                action="{{ url_for('delete_holding', holding_id=holding.id) }}"
-                style="display: inline;"
-                onsubmit="return confirm('Are you sure you want to delete this holding?');">
-              <button type="submit" class="btn btn-danger">Delete</button>
-          </form>
-        </td>
-      </tr>
-      {% endfor %}
-
-      <tr style="background: #f8f9fa; font-weight: bold;">
-        <td colspan="7" class="text-right"><strong>Account Total:</strong></td>
-        <td class="text-right">
-          <strong>{{ base_currency }} ${{ "{:,.2f}".format(account.total_value_in_base_currency(exchange_rates)) }}</strong>
-        </td>
-        <td colspan="5"></td>
-      </tr>
-    </tbody>
-  </table>
-  {% else %}
-    <p style="color: #7f8c8d; margin-top: 1rem;">No holdings in this account yet.</p>
-  {% endif %}
-</div>
+    <div class="entry-panel {{ 'hidden' if account.holdings }}" id="entry-{{ account.id }}" style="margin-top: {{ '0' if account.holdings else '1rem' }};">
+        <form method="POST" action="{{ url_for('add_holding') }}">
+            <input type="hidden" name="account_id" value="{{ account.id }}">
+            {{ E.holding_rows(account, securities, asset_classes, None, 1, 'rows-' ~ account.id) }}
+            <div class="btn-row" style="justify-content: flex-end; margin-top: 0.5rem;">
+                <button type="submit" class="btn btn-primary">Save holdings</button>
+            </div>
+        </form>
+    </div>
+</section>
 {% endfor %}
 
 {% if not accounts %}
 <div class="card">
-  <p style="color: #7f8c8d;">No accounts yet. <a href="{{ url_for('accounts') }}">Create an account first</a>.</p>
+    <p class="muted" style="margin-bottom: 1rem;">Holdings live in accounts, so start by adding one.</p>
+    <a href="{{ url_for('setup') }}" class="btn btn-primary">Start quick setup</a>
 </div>
 {% endif %}
 {% endblock %}
-

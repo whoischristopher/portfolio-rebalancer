@@ -316,8 +316,8 @@ def test_migrates_pre_portfolio_database():
     # global securities split: user 2 gets their own copies; nothing points across portfolios
     assert out["leaks"] == []
     assert out["securities"] == [[1, "XEQT", 30.0], [1, "ZAG", 14.0], [2, "XEQT", 30.0], [2, "ZAG", 14.0]]
-    assert out["holdings"] == [["Other-RRSP", "XEQT", 40.0, None], ["Other-RRSP", "ZAG", 10.0, 130.0],
-                               ["TFSA", "XEQT", 100.0, 2500.0]]
+    assert out["holdings"] == [["Other-RRSP", "XEQT", 40.0, None], ["Other-RRSP", "ZAG", 10.0, None],  # registered: ACB cleared
+                               ["TFSA", "XEQT", 100.0, None]]
     assert [u["column_names"] for u in out["uniques"]] == [["portfolio_id", "ticker"]]
     assert out["integrity"] == "ok" and out["fk"]
 

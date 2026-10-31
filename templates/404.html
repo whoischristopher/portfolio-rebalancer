@@ -4,9 +4,9 @@
 
 {% block content %}
 <div class="card" style="text-align: center; padding: 4rem 2rem;">
-    <h1 style="font-size: 4rem; color: #e74c3c;">404</h1>
+    <h1 style="font-size: 4rem; color: var(--danger);">404</h1>
     <h2 style="margin-bottom: 1rem;">Page Not Found</h2>
-    <p style="color: #7f8c8d; margin-bottom: 2rem;">The page you're looking for doesn't exist.</p>
+    <p style="color: var(--muted); margin-bottom: 2rem;">The page you're looking for doesn't exist.</p>
     <a href="{{ url_for('index') }}" class="btn btn-primary">Go Home</a>
 </div>
 {% endblock %}

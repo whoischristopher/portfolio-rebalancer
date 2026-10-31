@@ -147,19 +147,27 @@ def test_rebalance_flow():
     assert c.get("/securities").status_code == 200
     assert c.get(f"/securities/{ids['XIC']}/edit").status_code == 200
 
-    # --- book value in SECURITY currency: a USD buy adds the USD amount to ACB
+    # --- book value in SECURITY currency (taxable accounts only): a USD buy adds the USD amount to ACB
+    def buy_itot(acct):
+        with app.app_context():
+            Account.query.get(acc_ids[acct]).cash_balance = 2000.0
+            t = RebalanceTransaction(user_id=uid, portfolio_id=pid, account_id=acc_ids[acct], security_id=ids["ITOT"], action="BUY",
+                                     quantity=10, price=131.0, amount=1310.0, currency="USD", execution_order=99)
+            db.session.add(t); db.session.commit(); tid = t.id
+        c.post(f"/rebalance/execute/{tid}")
     with app.app_context():
-        itot = Holding.query.filter_by(account_id=acc_ids["RRSP"], security_id=ids["ITOT"]).first()
-        itot.book_value = 30000.0          # USD
-        Account.query.get(acc_ids["RRSP"]).cash_balance = 2000.0
-        t = RebalanceTransaction(user_id=uid, portfolio_id=pid, account_id=acc_ids["RRSP"], security_id=ids["ITOT"], action="BUY",
-                                 quantity=10, price=131.0, amount=1310.0, currency="USD", execution_order=99)
-        db.session.add(t); db.session.commit(); tid = t.id
-    c.post(f"/rebalance/execute/{tid}")
+        Holding.query.filter_by(account_id=acc_ids["RRSP"], security_id=ids["ITOT"]).first().book_value = 30000.0
+        db.session.add(Holding(account_id=acc_ids["Non-Reg"], security_id=ids["ITOT"], quantity=200, price=130,
+                               book_value=20000.0))
+        db.session.commit()
+    buy_itot("Non-Reg")
+    buy_itot("RRSP")
     with app.app_context():
-        itot = Holding.query.filter_by(account_id=acc_ids["RRSP"], security_id=ids["ITOT"]).first()
-        assert abs(itot.book_value - 31310.0) < 0.01, itot.book_value                              # stays USD
-        assert abs(Account.query.get(acc_ids["RRSP"]).cash_balance - (2000 - 1310 * 1.38)) < 0.05  # CAD cash at spot
+        nr_itot = Holding.query.filter_by(account_id=acc_ids["Non-Reg"], security_id=ids["ITOT"]).first()
+        assert abs(nr_itot.book_value - 21310.0) < 0.01, nr_itot.book_value                        # stays USD
+        assert abs(Account.query.get(acc_ids["Non-Reg"]).cash_balance - (2000 - 1310 * 1.38)) < 0.05  # CAD cash at spot
+        rr_itot = Holding.query.filter_by(account_id=acc_ids["RRSP"], security_id=ids["ITOT"]).first()
+        assert rr_itot.book_value == 30000.0 and rr_itot.quantity == 310     # registered: ACB not tracked
 
     # --- orphaned pending trades (account/security deleted) must not crash /rebalance
     with app.app_context():
@@ -218,7 +226,7 @@ def test_rebalance_flow():
         xef = Holding.query.filter_by(account_id=acc_ids["RRSP"], security_id=ids["XEF"]).first()
         assert r.status == "received" and r.proceeds == 10000
         assert abs(xef.quantity - (6000 - units)) < 1e-6
-        assert abs(xef.book_value - 200000.0 * (6000 - units) / 6000) < 0.01      # average-cost ACB
+        assert xef.book_value == 200000.0      # registered account: ACB isn't tracked, so left alone
         assert abs(Account.query.get(acc_ids["RRSP"]).cash_balance - (cash0 + 10000)) < 0.01
         rec = RebalanceTransaction.query.filter_by(user_id=uid, executed=True, security_id=ids["XEF"],
                                                    action="SELL").order_by(RebalanceTransaction.id.desc()).first()

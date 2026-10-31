@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+{% import "_entry.html" as E with context %}
+{% block title %}Quick start: accounts – Portfolio Rebalancer{% endblock %}
+
+{% block content %}
+<div class="wizard">
+    <div class="page-head">
+        <div>
+            <h1>Set up {{ active_portfolio.name }}</h1>
+            <p>Four short steps: your accounts, what's in them, the mix you're aiming for, then a first rebalancing plan. Everything saves as you go.</p>
+        </div>
+    </div>
+    {{ E.wizard_steps('accounts', status) }}
+
+    <form method="POST" action="{{ url_for('setup_accounts') }}">
+        {% if accounts %}
+        <div class="card">
+            <div class="card-head">
+                <h2>Accounts in this portfolio</h2>
+                <a href="{{ url_for('accounts') }}" class="btn btn-ghost btn-sm">Edit or remove on the Accounts page</a>
+            </div>
+            <table>
+                <thead><tr><th>Name</th><th>Type</th><th>Currency</th><th>Tax status</th><th class="text-right">Holdings</th></tr></thead>
+                <tbody>
+                {% for a in accounts %}
+                <tr>
+                    <td><strong>{{ a.name }}</strong></td>
+                    <td>{{ a.account_type or '—' }}</td>
+                    <td>{{ a.currency }}</td>
+                    <td>{% if a.is_registered %}<span class="badge badge-accent">Registered</span>{% else %}<span class="badge">Taxable</span>{% endif %}</td>
+                    <td class="text-right num">{{ a.holdings|length }}</td>
+                </tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% endif %}
+
+        <div class="card">
+            <div class="card-head">
+                <div>
+                    <h2>{{ 'Add more accounts' if accounts else 'Add your accounts' }}</h2>
+                    <p class="card-sub">One row per account. Picking a registered type (RRSP, TFSA, FHSA, LIRA…) marks it tax-sheltered automatically.</p>
+                </div>
+            </div>
+            {{ E.account_rows(active_portfolio.base_currency or 'CAD', 1 if accounts else 2) }}
+        </div>
+
+        <div class="wizard-foot">
+            <a href="{{ url_for('dashboard') }}" class="btn btn-ghost">Finish later</a>
+            <div class="btn-row">
+                <button type="submit" name="next" value="stay" class="btn btn-secondary">Save accounts</button>
+                <button type="submit" name="next" value="holdings" class="btn btn-primary">Save and enter holdings</button>
+            </div>
+        </div>
+    </form>
+</div>
+{% endblock %}

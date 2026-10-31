@@ -4,7 +4,7 @@
 
 {% block content %}
 <h1 style="margin-bottom: 1rem;">Portfolios</h1>
-<p style="color: #7f8c8d; margin-bottom: 2rem;">
+<p style="color: var(--muted); margin-bottom: 2rem;">
     Each portfolio is fully separate: its own accounts, securities, asset classes, targets, holdings and book values,
     rebalancing settings and plan. Only prices are shared – one price sheet fills them all.
     Switch between them with the selector at the top of every page.
@@ -30,7 +30,7 @@
                 <td>
                     <strong>{{ p.name }}</strong>
                     {% if p.id == active_portfolio.id %}
-                    <span style="background: #2ecc71; color: white; border-radius: 3px; padding: 0.1rem 0.4rem; font-size: 0.8rem; margin-left: 0.4rem;">active</span>
+                    <span style="background: var(--ok); color: white; border-radius: 3px; padding: 0.1rem 0.4rem; font-size: 0.8rem; margin-left: 0.4rem;">active</span>
                     {% endif %}
                 </td>
                 <td class="text-right">{{ row.accounts }}</td>
@@ -39,7 +39,7 @@
                 <td>
                     <form method="POST" action="{{ url_for('rename_portfolio', portfolio_id=p.id) }}" style="display: flex; gap: 0.5rem;">
                         <input type="text" name="name" value="{{ p.name }}" required
-                               style="padding: 0.35rem; border: 1px solid #ddd; border-radius: 4px; width: 12rem;">
+                               style="padding: 0.35rem; border: 1px solid var(--line); border-radius: 4px; width: 12rem;">
                         <button type="submit" class="btn btn-primary" style="padding: 0.35rem 0.75rem;">Save</button>
                     </form>
                 </td>
@@ -76,7 +76,7 @@
                 <input type="checkbox" name="copy_setup" style="width: auto;">
                 Start with a copy of the asset classes, securities and targets of "{{ active_portfolio.name }}"
             </label>
-            <small style="color: #7f8c8d;">
+            <small style="color: var(--muted);">
                 A one-time copy to save typing – the two portfolios stay independent afterwards. Accounts, holdings,
                 book values and trade history are never copied.
             </small>
