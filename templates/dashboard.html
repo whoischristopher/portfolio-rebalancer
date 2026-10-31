@@ -58,42 +58,48 @@
 {% endif %}
 
 {% if allocation_rows %}
-{% set ns = namespace(scale=1) %}
-{% for r in allocation_rows %}{% set ns.scale = [ns.scale, r.current, r.target + band]|max %}{% endfor %}
-{% set scale = [ns.scale * 1.15, 100]|min %}
+{# Drift chart: every target sits on the centre line; bars grow left (under) or right (over)
+   in percentage points. The band is in points too, so it's the same width on every row –
+   exactly the rule the rebalancer applies. #}
+{% set ns = namespace(span=band * 2) %}
+{% for r in allocation_rows %}{% set ns.span = [ns.span, (r.current - r.target)|abs]|max %}{% endfor %}
+{% set span = ns.span * 1.2 %}
+{% set half = 50 / span %}
 <div class="card">
     <div class="card-head">
         <div>
-            <h2>Allocation against target</h2>
-            <p class="card-sub">The shaded band is ±{{ band|round(2) }} points around each target – inside it, the rebalancer leaves things alone.</p>
+            <h2>Drift from target</h2>
+            <p class="card-sub">Each target is the centre line. Inside the shaded ±{{ '%g'|format(band) }}-point band the rebalancer leaves a class alone; outside it, the class needs rebalancing.</p>
         </div>
         <a href="{{ url_for('targets') }}" class="btn btn-ghost btn-sm">Edit targets</a>
     </div>
     <div class="alloc">
         {% for r in allocation_rows %}
         {% set diff = r.current - r.target %}
-        {% set state = 'within' if (diff|abs) <= band else ('over' if diff > 0 else 'under') %}
+        {% set outside = (diff|abs) > band + 1e-9 %}
         <div class="alloc-row">
         <div class="alloc-name">{{ r.name }}<span class="sub num">{{ base_currency }} {{ '{:,.0f}'.format(r.value) }}</span></div>
-        <div class="track" role="img" aria-label="{{ r.name }}: {{ '%.1f'|format(r.current) }}% now, target {{ '%g'|format(r.target) }}%">
-            <div class="track-band" style="left: {{ ([r.target - band, 0]|max) / scale * 100 }}%; width: {{ (([r.target + band, scale]|min) - ([r.target - band, 0]|max)) / scale * 100 }}%;"></div>
-            <div class="track-fill {{ state }}" style="width: {{ ([r.current, scale]|min) / scale * 100 }}%;"></div>
-            <div class="track-target" style="left: calc({{ r.target / scale * 100 }}% - 1px);"></div>
+        <div class="track" role="img" aria-label="{{ r.name }}: {{ '%+.2f'|format(diff) }} points from its {{ '%g'|format(r.target) }}% target{{ ', outside the band' if outside }}">
+            <div class="track-band" style="left: {{ 50 - band * half }}%; width: {{ band * half * 2 }}%;"></div>
+            <div class="track-fill {{ 'outside' if outside else 'within' }}"
+                 style="left: {{ 50 if diff >= 0 else 50 - (diff|abs) * half }}%; width: {{ [(diff|abs) * half, 0.6]|max }}%;"></div>
+            <div class="track-target"></div>
         </div>
         <div class="alloc-figs num">
-            <strong>{{ '%.1f'|format(r.current) }}%</strong> <span class="muted">of {{ '%g'|format(r.target) }}%</span>
-            <span class="diff {{ 'negative' if state == 'over' else ('positive' if state == 'within' else '') }}">
-                {% if state == 'within' %}within band{% else %}{{ '%+.1f'|format(diff) }} pts{% endif %}
-            </span>
+            <strong class="{{ 'drift-out' if outside }}">{{ '%+.2f'|format(diff) }}</strong> <span class="muted">pts</span>
+            <span class="diff">{{ '%.1f'|format(r.current) }}% of {{ '%g'|format(r.target) }}%{% if outside %}, <span class="drift-out">{{ 'over' if diff > 0 else 'under' }} band</span>{% endif %}</span>
         </div>
         </div>
         {% endfor %}
+        <div class="alloc-row alloc-axis num" aria-hidden="true">
+            <div></div>
+            <div class="axis"><span>−{{ '%.1f'|format(span) }} pts</span><span>Target</span><span>+{{ '%.1f'|format(span) }} pts</span></div>
+            <div></div>
+        </div>
     </div>
     <div class="alloc-legend">
-        <span><i style="background: var(--accent);"></i>Within band</span>
-        <span><i style="background: #B5762A;"></i>Over target</span>
-        <span><i style="background: #6F8A82;"></i>Under target</span>
-        <span><i style="background: var(--accent); width: 2px; height: 12px;"></i>Target</span>
+        <span><i style="background: var(--accent);"></i>Within band – no trade needed</span>
+        <span><i style="background: #B5762A;"></i>Outside band – needs rebalancing</span>
     </div>
 </div>
 {% endif %}

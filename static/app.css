@@ -242,7 +242,7 @@ select[multiple] { padding: 0.25rem; }
 
 /* ---------- Allocation tracks (dashboard) ---------- */
 .alloc { display: grid; gap: 0.9rem; }
-.alloc-row { display: grid; grid-template-columns: minmax(120px, 0.9fr) 3fr 7.5rem; grid-template-areas: "name track figs"; gap: 0.4rem 1.25rem; align-items: center; }
+.alloc-row { display: grid; grid-template-columns: minmax(140px, 0.9fr) 3fr 10rem; grid-template-areas: "name track figs"; gap: 0.4rem 1.25rem; align-items: center; }
 .alloc-row .alloc-name { grid-area: name; }
 .alloc-row .track { grid-area: track; }
 .alloc-row .alloc-figs { grid-area: figs; }
@@ -250,11 +250,13 @@ select[multiple] { padding: 0.25rem; }
 .alloc-name .sub { display: block; color: var(--muted); font-size: 0.82rem; font-weight: 400; }
 .track { position: relative; height: 26px; background: var(--bg-subtle); border-radius: 4px; }
 .track-band { position: absolute; top: 0; bottom: 0; background: #CFE3DC; }
-.track-target { position: absolute; top: -3px; bottom: -3px; width: 2px; background: var(--accent); }
-.track-fill { position: absolute; top: 7px; height: 12px; left: 0; border-radius: 0 3px 3px 0; background: var(--ink-2); }
-.track-fill.over { background: #B5762A; }
-.track-fill.under { background: #6F8A82; }
+.track-target { position: absolute; top: -3px; bottom: -3px; left: calc(50% - 1px); width: 2px; background: var(--ink-2); }
+.track-fill { position: absolute; top: 7px; height: 12px; border-radius: 2px; }
 .track-fill.within { background: var(--accent); }
+.track-fill.outside { background: #B5762A; }
+.drift-out { color: #8A4F12; }
+.alloc-axis { margin-top: -0.35rem; }
+.alloc-axis .axis { grid-area: track; display: flex; justify-content: space-between; color: var(--faint); font-size: 0.78rem; }
 .alloc-figs { text-align: right; white-space: nowrap; font-size: 0.92rem; }
 .alloc-figs .diff { display: block; font-size: 0.82rem; color: var(--muted); }
 .alloc-legend { display: flex; gap: 1.25rem; flex-wrap: wrap; color: var(--muted); font-size: 0.82rem; margin-top: 1.1rem; }
@@ -370,6 +372,7 @@ dialog.modal h2 { margin-bottom: 1rem; }
   .rows.accounts .entry-main, .rows.holdings .entry-main, .rows.holdings.registered .entry-main { grid-template-columns: 1fr 1fr; }
   .entry-details, .entry-details.priced-only { grid-template-columns: 1fr 1fr; }
   .alloc-row { grid-template-columns: 1fr auto; grid-template-areas: "name figs" "track track"; }
+  .alloc-axis > div:not(.axis) { display: none; }
 }
 
 @media (prefers-reduced-motion: reduce) {
