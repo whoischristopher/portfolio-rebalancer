@@ -55,6 +55,14 @@
             </label>
         </div>
 
+        <div class="form-group">
+            <label>
+                <input type="checkbox" name="is_illiquid" >
+                Can't be sold on demand (illiquid)
+            </label>
+            <small style="display:block; color: #7f8c8d;">For private funds and similar: the rebalancer will still buy it, but never sells it. If it's over target, the other targets are reduced to compensate.</small>
+        </div>
+
         <div style="display: flex; gap: 1rem; margin-top: 1.5rem;">
             <button type="submit" class="btn btn-primary">Add Security</button>
             <a href="{{ url_for('securities') }}" class="btn btn-secondary">Cancel</a>

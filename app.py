@@ -389,6 +389,7 @@ def add_security():
                 currency=request.form.get('currency', 'CAD'),
                 is_public=request.form.get('is_public') == 'on',
                 auto_update_price=request.form.get('auto_update_price') == 'on',
+                is_illiquid=request.form.get('is_illiquid') == 'on',
                 last_price=float(request.form['price']) if request.form.get('price') else None,
             ))
             db.session.commit()
@@ -411,6 +412,7 @@ def edit_security(security_id):
         security.currency = request.form.get('currency', 'CAD')
         security.is_public = request.form.get('is_public') == 'on'
         security.auto_update_price = request.form.get('auto_update_price') == 'on'
+        security.is_illiquid = request.form.get('is_illiquid') == 'on'
         if request.form.get('price'):
             set_security_price(security, float(request.form['price']))
         db.session.commit()
@@ -857,6 +859,7 @@ _ADDED_COLUMNS = [
     ('rebalance_transactions', 'realized_gain', 'FLOAT'),
     ('securities', 'last_price', 'FLOAT'),
     ('users', 'last_plan_summary', 'TEXT'),
+    ('securities', 'is_illiquid', 'BOOLEAN DEFAULT FALSE'),
 ]
 
 

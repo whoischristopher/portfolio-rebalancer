@@ -212,6 +212,7 @@ class Security(db.Model):
     currency = db.Column(db.String(3), default='CAD')
     is_public = db.Column(db.Boolean, default=True)
     auto_update_price = db.Column(db.Boolean, default=True)
+    is_illiquid = db.Column(db.Boolean, default=False)  # can't be sold on demand (private funds etc.)
     last_price = db.Column(db.Float, nullable=True)   # THE price (security currency); holdings mirror it
 
     # Relationship links
