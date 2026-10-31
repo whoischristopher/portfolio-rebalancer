@@ -11,15 +11,10 @@ class User(UserMixin, db.Model):
     email = db.Column(db.String(255), unique=True, nullable=False, index=True)
     name = db.Column(db.String(255))
     picture = db.Column(db.String(512))
-    base_currency = db.Column(db.String(3), default='CAD')
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     last_login = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-    trading_costs_enabled = db.Column(db.Boolean, default=False)   # legacy, unused by the optimiser
-    balanced_threshold = db.Column(db.Float, default=0.5)
-    precision_rebalancing = db.Column(db.Boolean, default=True)   # = fractional final buy per account
-    trade_cost = db.Column(db.Float, default=0.0)                 # per trade, in base currency
-    taxable_sell_mode = db.Column(db.String(10), default='ask')   # 'never' | 'ask' | 'allow'
-    last_plan_summary = db.Column(db.Text)                        # JSON from rebalancer.generate_plan
+    # Rebalancing settings live on Portfolio. The old copies on this table (base_currency,
+    # balanced_threshold, trade_cost, …) are read once by migrations.py and then dropped.
 
     # OAuth token storage
     google_token = db.Column(db.Text)  # JSON string of the token dict
@@ -43,8 +38,7 @@ class Portfolio(db.Model):
     holdings/ACB, plan and rebalancing settings. One login can manage several (e.g. your
     own and your spouse's); nothing is shared between them except the price feed.
 
-    The rebalancing settings below used to live on User; the User columns remain only
-    so old databases can be migrated.'''
+    The rebalancing settings below used to live on User (migrated by migrations.py).'''
     __tablename__ = 'portfolios'
 
     id = db.Column(db.Integer, primary_key=True)
@@ -86,8 +80,6 @@ class Account(db.Model):
     account_type = db.Column(db.String(50))  # 'RRSP', 'TFSA', 'Non-registered', etc.
     currency = db.Column(db.String(3), default='CAD')  # Account currency
     is_registered = db.Column(db.Boolean, default=False)  # Tax status
-    priority = db.Column(db.Integer, default=0)  # For rebalancing order
-    notes = db.Column(db.Text)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     cash_balance = db.Column(db.Float, default=0.0)  # In account's currency
@@ -193,7 +185,7 @@ class ExchangeRate(db.Model):
     to_currency = db.Column(db.String(3), nullable=False, index=True)
     rate = db.Column(db.Float, nullable=False)
     date = db.Column(db.DateTime, default=datetime.utcnow, index=True)
-    source = db.Column(db.String(50))  # 'manual', 'api', 'yfinance'
+    source = db.Column(db.String(50))  # 'manual', 'api'
     
     def __repr__(self):
         return f'<ExchangeRate {self.from_currency}/{self.to_currency}: {self.rate}>'
@@ -280,7 +272,6 @@ class Security(db.Model):
     asset_class_id = db.Column(db.Integer, db.ForeignKey('asset_classes.id'), nullable=False)
 
     currency = db.Column(db.String(3), default='CAD')
-    is_public = db.Column(db.Boolean, default=True)
     auto_update_price = db.Column(db.Boolean, default=True)
     is_illiquid = db.Column(db.Boolean, default=False)  # can't be sold on demand (private funds etc.)
     last_price = db.Column(db.Float, nullable=True)   # THE price (security currency); holdings mirror it

@@ -65,6 +65,8 @@ Multiple portfolios (e.g. yours and your spouse's) under one login:
 - Upgrading: on first start, existing data moves into a portfolio called "My Portfolio" with your current settings
   (back up `data/portfolio.db` first; the securities and asset-class tables are rebuilt to make tickers unique
   per portfolio instead of globally).
+- Unused columns are dropped on start (users' old per-user settings once copied to their first portfolio,
+  accounts.priority/notes, securities.is_public). Back up `data/portfolio.db` before upgrading.
 
 Book value tracking (taxable accounts only): enter ACB (total, in the security's currency) for non-registered
 holdings; executing trades in the app updates it (average cost) and records realised gains. ACB isn't stored for

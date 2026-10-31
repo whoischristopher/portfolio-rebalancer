@@ -285,6 +285,8 @@ with app.app_context():
     out['holdings'] = sorted((h.account.name, h.security.ticker, h.quantity, h.book_value) for h in Holding.query.all())
     out['securities'] = sorted((s.portfolio.user_id, s.ticker, s.last_price) for s in Security.query.all())
     out['uniques'] = inspect(db.engine).get_unique_constraints('securities')
+    out['columns'] = {t: sorted(c['name'] for c in inspect(db.engine).get_columns(t))
+                      for t in ('users', 'accounts', 'securities')}
     out['integrity'] = db.session.execute(text('PRAGMA integrity_check')).scalar()
     out['fk'] = db.session.execute(text('PRAGMA foreign_key_check')).fetchall() == []
     print('RESULT' + json.dumps(out))
@@ -320,8 +322,41 @@ def test_migrates_pre_portfolio_database():
                                ["TFSA", "XEQT", 100.0, None]]
     assert [u["column_names"] for u in out["uniques"]] == [["portfolio_id", "ticker"]]
     assert out["integrity"] == "ok" and out["fk"]
+    # unused columns dropped – after their values were carried into the portfolios above
+    assert not {"base_currency", "trade_cost", "taxable_sell_mode", "balanced_threshold", "precision_rebalancing",
+                "last_plan_summary", "trading_costs_enabled"} & set(out["columns"]["users"])
+    assert not {"priority", "notes"} & set(out["columns"]["accounts"])
+    assert "is_public" not in out["columns"]["securities"]
 
     # second start: nothing left to do, same result
     r2 = _run(db_path, CHECK)
     assert "Migrated" not in r2.stderr
     assert json.loads(r2.stdout.split("RESULT", 1)[1]) == out
+
+
+def test_drops_unused_columns_from_current_database():
+    """A database already on the multi-portfolio schema but still carrying the old unused
+    columns (i.e. any live install before this cleanup). Regression: an earlier startup step
+    left a read transaction open, so SQLite refused the DROP COLUMN ("database is locked")."""
+    db_path = os.path.join(tempfile.mkdtemp(), "current.db")
+    _run(db_path, r"""
+from app import app, db
+from models import User, Portfolio, Account
+with app.app_context():
+    u = User(google_id='g', email='e@x.com'); db.session.add(u); db.session.flush()
+    p = Portfolio(user_id=u.id, name='Mine'); db.session.add(p); db.session.flush()
+    db.session.add(Account(user_id=u.id, portfolio_id=p.id, name='RRSP', is_registered=True)); db.session.commit()
+""")
+    con = sqlite3.connect(db_path)
+    for table, col in (("users", "trade_cost FLOAT"), ("users", "trading_costs_enabled BOOLEAN"),
+                       ("accounts", "priority INTEGER"), ("accounts", "notes TEXT"), ("securities", "is_public BOOLEAN")):
+        con.execute(f"ALTER TABLE {table} ADD COLUMN {col}")
+    con.commit(); con.close()
+
+    r = _run(db_path, CHECK)
+    assert "Could not drop" not in r.stderr, r.stderr[-2000:]
+    out = json.loads(r.stdout.split("RESULT", 1)[1])
+    assert not {"trade_cost", "trading_costs_enabled"} & set(out["columns"]["users"])
+    assert not {"priority", "notes"} & set(out["columns"]["accounts"])
+    assert "is_public" not in out["columns"]["securities"]
+    assert out["integrity"] == "ok"

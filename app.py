@@ -34,10 +34,7 @@ from models import Target, AssetClass, ExchangeRate, RebalanceTransaction, Pendi
 import migrations
 from auth import auth_bp, init_oauth
 from services.fx import get_exchange_rates
-from services.portfolio import (
-    calculate_portfolio_allocation,
-    calculate_asset_class_deltas,
-)
+from services.portfolio import calculate_portfolio_allocation
 from services.prices import (
     PriceSheetError, fetch_prices_from_user_sheet, match_prices_across_portfolios, set_security_price,
     same_security_elsewhere,
@@ -724,7 +721,6 @@ def add_security():
                 name=request.form.get('name'),
                 asset_class_id=asset_class_id,
                 currency=request.form.get('currency', 'CAD'),
-                is_public=request.form.get('is_public') == 'on',
                 auto_update_price=request.form.get('auto_update_price') == 'on',
                 is_illiquid=request.form.get('is_illiquid') == 'on',
             )
@@ -772,7 +768,6 @@ def edit_security(security_id):
         security.name = request.form.get('name')
         security.asset_class_id = _asset_class_from_form() or security.asset_class_id
         security.currency = request.form.get('currency', 'CAD')
-        security.is_public = request.form.get('is_public') == 'on'
         security.auto_update_price = request.form.get('auto_update_price') == 'on'
         security.is_illiquid = request.form.get('is_illiquid') == 'on'
         if request.form.get('price'):
@@ -1249,7 +1244,7 @@ def _copy_setup(src, dst):
     for sec in src.securities:
         db.session.add(Security(
             portfolio_id=dst.id, ticker=sec.ticker, name=sec.name, asset_class_id=ac_map[sec.asset_class_id].id,
-            currency=sec.currency, is_public=sec.is_public, auto_update_price=sec.auto_update_price,
+            currency=sec.currency, auto_update_price=sec.auto_update_price,
             is_illiquid=sec.is_illiquid, last_price=sec.last_price))
     for t in src.targets:
         db.session.add(Target(user_id=dst.user_id, portfolio_id=dst.id,
@@ -1364,7 +1359,7 @@ def api_get_holdings():
             'value': h.market_value,
             'value_base_currency': h.market_value_in_base_currency(exchange_rates),
             'asset_class': h.security.asset_class.name, 
-            'is_public': h.security.is_public,
+            'is_illiquid': h.security.is_illiquid,
         }
         for account in accounts
         for h in account.holdings
