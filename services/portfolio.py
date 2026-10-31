@@ -1,14 +1,14 @@
 """
 services/portfolio.py – Portfolio-level analytics helpers.
 
-All returned values are in the user's base_currency unless noted.
+All functions take a Portfolio; returned values are in its base_currency unless noted.
 """
 from collections import defaultdict
 from models import Account, Target, AssetClass, Security, SecurityPreference, Holding
 from services.fx import convert_to_base
 
 
-def calculate_portfolio_allocation(user, exchange_rates: dict):
+def calculate_portfolio_allocation(portfolio, exchange_rates: dict):
     """
     Compute current allocation by asset_class_id.
 
@@ -20,11 +20,11 @@ def calculate_portfolio_allocation(user, exchange_rates: dict):
     allocation: dict = defaultdict(float)
     total_value = 0.0
 
-    for account in user.accounts:
+    for account in portfolio.accounts:
         # Cash contribution
         cash = account.cash_balance or 0.0
         cash_base = convert_to_base(
-            cash, account.currency, user.base_currency, exchange_rates
+            cash, account.currency, portfolio.base_currency, exchange_rates
         )
         total_value += cash_base
 
@@ -43,7 +43,7 @@ def calculate_portfolio_allocation(user, exchange_rates: dict):
     return dict(allocation), allocation_pct, total_value
 
 
-def calculate_asset_class_deltas(user, exchange_rates: dict):
+def calculate_asset_class_deltas(portfolio, exchange_rates: dict):
     """
     For each target, compute how far current allocation is from target.
 
@@ -55,10 +55,10 @@ def calculate_asset_class_deltas(user, exchange_rates: dict):
         total_portfolio – float
     """
     allocation, allocation_pct, total_portfolio = calculate_portfolio_allocation(
-        user, exchange_rates
+        portfolio, exchange_rates
     )
     deltas = []
-    for target in Target.query.filter_by(user_id=user.id).all():
+    for target in Target.query.filter_by(portfolio_id=portfolio.id).all():
         current_value = allocation.get(target.asset_class_id, 0.0)
         current_pct   = allocation_pct.get(target.asset_class_id, 0.0)
         target_value  = total_portfolio * target.target_percentage / 100
@@ -76,7 +76,7 @@ def calculate_asset_class_deltas(user, exchange_rates: dict):
     return deltas, total_portfolio
 
 
-def calculate_security_deltas(user, exchange_rates: dict):
+def calculate_security_deltas(portfolio, exchange_rates: dict):
     """
     Compute per-security value deltas against proportional targets.
 
@@ -88,7 +88,7 @@ def calculate_security_deltas(user, exchange_rates: dict):
     security_totals: dict = {}
     current_by_class: dict = defaultdict(float)
 
-    for account in user.accounts:
+    for account in portfolio.accounts:
         for holding in account.holdings:
             sec = holding.security
             if not sec or not sec.asset_class_id:
@@ -105,7 +105,7 @@ def calculate_security_deltas(user, exchange_rates: dict):
             security_totals[sec.id]["by_account"][account.id] += value
             current_by_class[sec.asset_class_id]             += value
 
-    deltas, _ = calculate_asset_class_deltas(user, exchange_rates)
+    deltas, _ = calculate_asset_class_deltas(portfolio, exchange_rates)
     target_by_class = {d["asset_class_id"]: d["target_value"] for d in deltas}
 
     desired_security_delta = {}

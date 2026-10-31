@@ -4,28 +4,29 @@
 {% block content %}
 <h1 style="margin-bottom: 2rem;">Settings</h1>
 
+<form method="POST" action="{{ url_for('update_settings') }}">
 <div class="card">
-    <h2>User Preferences</h2>
-    <form method="POST" action="{{ url_for('update_settings') }}">
+    <h2>Portfolio Settings – {{ portfolio.name }}</h2>
+    <p style="color: #7f8c8d; margin-bottom: 1.5rem;">These apply only to the portfolio selected at the top of the page.</p>
         <div class="form-group">
             <label for="base_currency">Base Currency</label>
             <select id="base_currency" name="base_currency" required>
-                <option value="CAD" {% if user.base_currency == 'CAD' %}selected{% endif %}>CAD</option>
-                <option value="USD" {% if user.base_currency == 'USD' %}selected{% endif %}>USD</option>
+                <option value="CAD" {% if portfolio.base_currency == 'CAD' %}selected{% endif %}>CAD</option>
+                <option value="USD" {% if portfolio.base_currency == 'USD' %}selected{% endif %}>USD</option>
             </select>
         </div>
         <div class="form-group">
-            <label for="trade_cost">Trading Cost per Trade ({{ user.base_currency }})</label>
+            <label for="trade_cost">Trading Cost per Trade ({{ portfolio.base_currency }})</label>
             <input type="number" step="0.01" min="0" id="trade_cost" name="trade_cost"
-                   value="{{ '%.2f'|format(user.trade_cost or 0) }}">
+                   value="{{ '%.2f'|format(portfolio.trade_cost or 0) }}">
             <small style="color: #7f8c8d;">Commission per buy or sell. Even at $0 the rebalancer still keeps the number of trades low.</small>
         </div>
         <div class="form-group">
             <label for="taxable_sell_mode">Selling in Non-Registered Accounts</label>
             <select id="taxable_sell_mode" name="taxable_sell_mode">
-                <option value="ask" {% if (user.taxable_sell_mode or 'ask') == 'ask' %}selected{% endif %}>Ask me (recommended)</option>
-                <option value="never" {% if user.taxable_sell_mode == 'never' %}selected{% endif %}>Never</option>
-                <option value="allow" {% if user.taxable_sell_mode == 'allow' %}selected{% endif %}>Allow (minimise realised gains)</option>
+                <option value="ask" {% if (portfolio.taxable_sell_mode or 'ask') == 'ask' %}selected{% endif %}>Ask me (recommended)</option>
+                <option value="never" {% if portfolio.taxable_sell_mode == 'never' %}selected{% endif %}>Never</option>
+                <option value="allow" {% if portfolio.taxable_sell_mode == 'allow' %}selected{% endif %}>Allow (minimise realised gains)</option>
             </select>
             <small style="color: #7f8c8d;">
                 <em>Ask</em> plans using cash and registered accounts only, and, if something is still outside its band,
@@ -39,14 +40,14 @@
                    step="0.1" 
                    id="balanced_threshold" 
                    name="balanced_threshold" 
-                   value="{{ current_user.balanced_threshold or 0.5 }}"
+                   value="{{ portfolio.balanced_threshold if portfolio.balanced_threshold is not none else 0.5 }}"
                    required>
             <small style="color: #7f8c8d;">Asset classes within this % of target are considered "balanced" (default: 0.5%)</small>
         </div>
         <div class="form-group">
             <label>
                 <input type="checkbox" name="precision_rebalancing" 
-                       {% if current_user.precision_rebalancing %}checked{% endif %}>
+                       {% if portfolio.precision_rebalancing %}checked{% endif %}>
                 Use fractional shares for the final buy in each account
             </label>
             <small class="form-text text-muted">
@@ -54,6 +55,26 @@
                 (the asset class furthest below target). Turn off if your broker doesn't support fractional shares.
             </small>
         </div>
+        <div class="form-group">
+            <label for="sl_link_portfolio_id">Superficial-Loss Check Across Portfolios</label>
+            <select id="sl_link_portfolio_id" name="sl_link_portfolio_id" {% if not other_portfolios %}disabled{% endif %}>
+                <option value="">No – this portfolio only</option>
+                {% for p in other_portfolios %}
+                <option value="{{ p.id }}" {% if portfolio.sl_link_portfolio_id == p.id %}selected{% endif %}>Also check trades recorded in "{{ p.name }}"</option>
+                {% endfor %}
+            </select>
+            <small style="color: #7f8c8d;">
+                The superficial-loss rule also applies to purchases by an affiliated person – notably your spouse or
+                common-law partner (including their RRSP/TFSA). If the other portfolio belongs to such a person, link it here
+                so a loss sale here isn't paired with a buy of the same ticker there within 30 days (and vice versa – set it in
+                both portfolios). Only trades executed in this app are known.
+            </small>
+        </div>
+</div>
+
+<div class="card">
+    <h2>Login Settings</h2>
+    <p style="color: #7f8c8d; margin-bottom: 1.5rem;">Shared by all your portfolios.</p>
         <div class="form-group">
             <label for="price_sheet_id">Price Lookup Sheet ID</label>
             <input type="text" 
@@ -66,12 +87,13 @@
                 exchange prefix is ignored when matching your securities) and
                 <code>=GOOGLEFINANCE(A2,"price")</code> formulas in column B. The first tab is read. 
                 Then paste the Sheet ID from the URL here: 
-                <code>docs.google.com/spreadsheets/d/<strong>YOUR_SHEET_ID</strong>/edit</code>
+                <code>docs.google.com/spreadsheets/d/<strong>YOUR_SHEET_ID</strong>/edit</code>.
+                One sheet prices every portfolio: list each ticker once, even if several portfolios hold it.
             </small>
         </div>
         <button type="submit" class="btn btn-success">Save Settings</button>
-    </form>
 </div>
+</form>
 
 <div class="card">
     <h2>Account Information</h2>

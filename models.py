@@ -28,6 +28,8 @@ class User(UserMixin, db.Model):
     price_sheet_id = db.Column(db.String(255))  # e.g., "1abc...xyz"
  
     # Relationships
+    portfolios = db.relationship('Portfolio', back_populates='user', lazy=True, cascade='all, delete-orphan',
+                                 foreign_keys='Portfolio.user_id', order_by='Portfolio.id')
     targets = db.relationship('Target', back_populates='user', lazy=True, cascade='all, delete-orphan')
     accounts = db.relationship('Account', back_populates='user', lazy=True, cascade='all, delete-orphan')
     security_preferences = db.relationship('SecurityPreference', back_populates='user', lazy=True, cascade='all, delete-orphan') 
@@ -36,12 +38,50 @@ class User(UserMixin, db.Model):
         return f'<User {self.email}>'
 
 
+class Portfolio(db.Model):
+    '''A self-contained portfolio: its own accounts, securities, asset classes, targets,
+    holdings/ACB, plan and rebalancing settings. One login can manage several (e.g. your
+    own and your spouse's); nothing is shared between them except the price feed.
+
+    The rebalancing settings below used to live on User; the User columns remain only
+    so old databases can be migrated.'''
+    __tablename__ = 'portfolios'
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False, index=True)
+    name = db.Column(db.String(100), nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    base_currency = db.Column(db.String(3), default='CAD')
+    balanced_threshold = db.Column(db.Float, default=0.5)
+    precision_rebalancing = db.Column(db.Boolean, default=True)   # = fractional final buy per account
+    trade_cost = db.Column(db.Float, default=0.0)                 # per trade, in base currency
+    taxable_sell_mode = db.Column(db.String(10), default='ask')   # 'never' | 'ask' | 'allow'
+    last_plan_summary = db.Column(db.Text)                        # JSON from rebalancer.generate_plan
+    # Optional: also respect the superficial-loss rule against trades recorded in this
+    # other portfolio (e.g. your spouse's – an affiliated person). NULL = off (default).
+    sl_link_portfolio_id = db.Column(db.Integer, db.ForeignKey('portfolios.id'), nullable=True)
+
+    user = db.relationship('User', back_populates='portfolios', foreign_keys=[user_id])
+    sl_link_portfolio = db.relationship('Portfolio', remote_side=[id], foreign_keys=[sl_link_portfolio_id])
+    accounts = db.relationship('Account', back_populates='portfolio', lazy=True, cascade='all, delete-orphan')
+    targets = db.relationship('Target', back_populates='portfolio', lazy=True, cascade='all, delete-orphan')
+    securities = db.relationship('Security', back_populates='portfolio', lazy=True, cascade='all, delete-orphan')
+    asset_classes = db.relationship('AssetClass', back_populates='portfolio', lazy=True, cascade='all, delete-orphan')
+    security_preferences = db.relationship('SecurityPreference', back_populates='portfolio', lazy=True,
+                                           cascade='all, delete-orphan')
+
+    def __repr__(self):
+        return f'<Portfolio {self.id} {self.name}>'
+
+
 class Account(db.Model):
     '''Investment account model'''
     __tablename__ = 'accounts'
     
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False, index=True)
+    portfolio_id = db.Column(db.Integer, db.ForeignKey('portfolios.id'), nullable=False, index=True)
     name = db.Column(db.String(255), nullable=False)
     account_type = db.Column(db.String(50))  # 'RRSP', 'TFSA', 'Non-registered', etc.
     currency = db.Column(db.String(3), default='CAD')  # Account currency
@@ -55,6 +95,7 @@ class Account(db.Model):
     # Relationships
     holdings = db.relationship('Holding', back_populates='account', lazy=True, cascade='all, delete-orphan')
     user = db.relationship('User', back_populates='accounts')
+    portfolio = db.relationship('Portfolio', back_populates='accounts')
     
     def total_value_in_base_currency(self, exchange_rates):
         '''Calculate total account value in base currency'''
@@ -100,7 +141,7 @@ class Holding(db.Model):
     def market_value_in_base_currency(self, exchange_rates):
         value = self.market_value
         sec_currency = self.security.currency  # single source of truth
-        base_currency = self.account.user.base_currency
+        base_currency = self.account.portfolio.base_currency
         if sec_currency != base_currency:
             rate = exchange_rates.get(f"{sec_currency}_TO_{base_currency}", 1.0)
             value *= rate
@@ -128,8 +169,10 @@ class Target(db.Model):
     
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False, index=True)
+    portfolio_id = db.Column(db.Integer, db.ForeignKey('portfolios.id'), nullable=False, index=True)
     asset_class_id = db.Column(db.Integer, db.ForeignKey('asset_classes.id'), nullable=False)
     asset_class = db.relationship('AssetClass', back_populates='targets')
+    portfolio = db.relationship('Portfolio', back_populates='targets')
     target_percentage = db.Column(db.Float, nullable=False)
     
     user = db.relationship('User', back_populates='targets')
@@ -161,6 +204,7 @@ class RebalanceTransaction(db.Model):
     
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False, index=True)
+    portfolio_id = db.Column(db.Integer, db.ForeignKey('portfolios.id'), nullable=False, index=True)
     account_id = db.Column(db.Integer, db.ForeignKey('accounts.id'), nullable=False)
     security_id = db.Column(db.Integer, db.ForeignKey('securities.id'), nullable=True)
     
@@ -196,6 +240,7 @@ class PendingRedemption(db.Model):
 
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False, index=True)
+    portfolio_id = db.Column(db.Integer, db.ForeignKey('portfolios.id'), nullable=False, index=True)
     account_id = db.Column(db.Integer, db.ForeignKey('accounts.id'), nullable=False)
     security_id = db.Column(db.Integer, db.ForeignKey('securities.id'), nullable=False)
     quantity = db.Column(db.Float, nullable=False)
@@ -211,8 +256,11 @@ class PendingRedemption(db.Model):
 
 class AssetClass(db.Model):
     __tablename__ = 'asset_classes'
+    __table_args__ = (db.UniqueConstraint('portfolio_id', 'name', name='uq_asset_classes_portfolio_name'),)
     id = db.Column(db.Integer, primary_key=True)
-    name = db.Column(db.String(100), unique=True, nullable=False)
+    portfolio_id = db.Column(db.Integer, db.ForeignKey('portfolios.id'), nullable=False, index=True)
+    name = db.Column(db.String(100), nullable=False)          # unique within a portfolio
+    portfolio = db.relationship('Portfolio', back_populates='asset_classes')
 
     # One-to-many link: an asset class has many securities
     securities = db.relationship('Security', back_populates='asset_class', cascade='all, delete-orphan')
@@ -223,9 +271,11 @@ class AssetClass(db.Model):
 # ---------- Security / SecurityPreference Models ---------- #
 class Security(db.Model):
     __tablename__ = 'securities'
+    __table_args__ = (db.UniqueConstraint('portfolio_id', 'ticker', name='uq_securities_portfolio_ticker'),)
     
     id = db.Column(db.Integer, primary_key=True)
-    ticker = db.Column(db.String(20), unique=True, nullable=False)       # e.g. VTI, MUB
+    portfolio_id = db.Column(db.Integer, db.ForeignKey('portfolios.id'), nullable=False, index=True)
+    ticker = db.Column(db.String(20), nullable=False)       # e.g. VTI, MUB – unique within a portfolio
     name = db.Column(db.String(120))
     asset_class_id = db.Column(db.Integer, db.ForeignKey('asset_classes.id'), nullable=False)
 
@@ -236,6 +286,7 @@ class Security(db.Model):
     last_price = db.Column(db.Float, nullable=True)   # THE price (security currency); holdings mirror it
 
     # Relationship links
+    portfolio = db.relationship('Portfolio', back_populates='securities')
     asset_class = db.relationship('AssetClass', back_populates='securities')
     preferences = db.relationship('SecurityPreference', back_populates='security', cascade='all, delete-orphan')
 
@@ -249,6 +300,7 @@ class SecurityPreference(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     security_id = db.Column(db.Integer, db.ForeignKey('securities.id'), nullable=False, index=True)
     user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False, index=True)
+    portfolio_id = db.Column(db.Integer, db.ForeignKey('portfolios.id'), nullable=False, index=True)
 
     restriction_type = db.Column(
         db.String(30),
@@ -267,3 +319,4 @@ class SecurityPreference(db.Model):
     # Relationship links
     security = db.relationship('Security', back_populates='preferences')
     user = db.relationship('User', back_populates='security_preferences')
+    portfolio = db.relationship('Portfolio', back_populates='security_preferences')

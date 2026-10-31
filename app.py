@@ -1,7 +1,8 @@
 import os
 import json
 import logging
-from flask import Flask, render_template, redirect, url_for, request, jsonify, flash
+from urllib.parse import urlparse
+from flask import Flask, render_template, redirect, url_for, request, jsonify, flash, session, g, abort
 from flask_login import LoginManager, login_required, current_user
 from extensions import db
 from datetime import datetime
@@ -28,8 +29,9 @@ app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
 
 db.init_app(app)
 
-from models import User, Account, Holding, Security, SecurityPreference
+from models import User, Portfolio, Account, Holding, Security, SecurityPreference
 from models import Target, AssetClass, ExchangeRate, RebalanceTransaction, PendingRedemption
+import migrations
 from auth import auth_bp, init_oauth
 from services.fx import get_exchange_rates
 from services.portfolio import (
@@ -37,7 +39,8 @@ from services.portfolio import (
     calculate_asset_class_deltas,
 )
 from services.prices import (
-    PriceSheetError, fetch_prices_from_user_sheet, match_prices_to_securities, set_security_price,
+    PriceSheetError, fetch_prices_from_user_sheet, match_prices_across_portfolios, set_security_price,
+    same_security_elsewhere,
 )
 from rebalancer import generate_plan
 from services.fx import convert_to_base
@@ -67,6 +70,69 @@ init_oauth(app)
 app.register_blueprint(auth_bp, url_prefix='/auth')
 
 # ---------------------------------------------------------------------------
+# Active portfolio
+# ---------------------------------------------------------------------------
+# One login can manage several fully separate portfolios (e.g. yours and your
+# spouse's). Every page works on the "active" one, kept in the session. All data
+# access goes through current_portfolio(), and anything addressed by id is checked
+# against it with _require(), so one portfolio's rows can never leak into another.
+def current_portfolio():
+    if 'portfolio' in g:
+        return g.portfolio
+    p = None
+    pid = session.get('portfolio_id')
+    if pid:
+        p = Portfolio.query.filter_by(id=pid, user_id=current_user.id).first()
+    if p is None:
+        p = Portfolio.query.filter_by(user_id=current_user.id).order_by(Portfolio.id).first()
+    if p is None:                                   # brand-new login
+        p = migrations.new_default_portfolio(current_user)
+        db.session.add(p)
+        db.session.commit()
+    session['portfolio_id'] = p.id
+    g.portfolio = p
+    return p
+
+
+def _require(obj):
+    """404 unless *obj* exists and belongs to the active portfolio."""
+    if obj is None:
+        abort(404)
+    pid = obj.account.portfolio_id if isinstance(obj, Holding) else obj.portfolio_id
+    if pid != current_portfolio().id:
+        abort(404)
+    return obj
+
+
+def _get(model, obj_id):
+    try:
+        obj = db.session.get(model, int(obj_id))
+    except (TypeError, ValueError):
+        obj = None
+    return _require(obj)
+
+
+def _p_accounts():
+    return Account.query.filter_by(portfolio_id=current_portfolio().id).order_by(Account.name).all()
+
+
+def _p_asset_classes():
+    return AssetClass.query.filter_by(portfolio_id=current_portfolio().id).order_by(AssetClass.name.asc()).all()
+
+
+def _p_securities():
+    return Security.query.filter_by(portfolio_id=current_portfolio().id).order_by(Security.ticker.asc()).all()
+
+
+@app.context_processor
+def _inject_portfolios():
+    if not current_user.is_authenticated:
+        return {}
+    return {'active_portfolio': current_portfolio(),
+            'all_portfolios': Portfolio.query.filter_by(user_id=current_user.id).order_by(Portfolio.id).all()}
+
+
+# ---------------------------------------------------------------------------
 # Routes – General
 # ---------------------------------------------------------------------------
 @app.route('/')
@@ -79,12 +145,11 @@ def index():
 @app.route('/dashboard')
 @login_required
 def dashboard():
-    accounts = Account.query.filter_by(user_id=current_user.id).all()
-    targets = Target.query.filter_by(user_id=current_user.id).all()
-    exchange_rates = get_exchange_rates(current_user)
-    allocation, allocation_pct, total_value = calculate_portfolio_allocation(
-        current_user, exchange_rates
-    )
+    P = current_portfolio()
+    accounts = _p_accounts()
+    targets = Target.query.filter_by(portfolio_id=P.id).all()
+    exchange_rates = get_exchange_rates(P)
+    allocation, allocation_pct, total_value = calculate_portfolio_allocation(P, exchange_rates)
     return render_template(
         'dashboard.html',
         user=current_user,
@@ -94,7 +159,7 @@ def dashboard():
         allocation=allocation,
         allocation_pct=allocation_pct,
         exchange_rates=exchange_rates,
-        base_currency=current_user.base_currency,
+        base_currency=P.base_currency,
     )
 
 
@@ -104,8 +169,7 @@ def dashboard():
 @app.route('/accounts')
 @login_required
 def accounts():
-    user_accounts = Account.query.filter_by(user_id=current_user.id).all()
-    return render_template('accounts.html', accounts=user_accounts)
+    return render_template('accounts.html', accounts=_p_accounts())
 
 
 @app.route('/accounts/add', methods=['POST'])
@@ -117,6 +181,7 @@ def add_account():
         return redirect(url_for('accounts'))
     account = Account(
         user_id=current_user.id,
+        portfolio_id=current_portfolio().id,
         name=name,
         account_type=request.form.get('account_type'),
         currency=request.form.get('currency', 'CAD'),
@@ -131,10 +196,7 @@ def add_account():
 @app.route('/accounts/<int:account_id>/delete', methods=['POST'])
 @login_required
 def delete_account(account_id):
-    account = Account.query.get_or_404(account_id)
-    if account.user_id != current_user.id:
-        flash('Unauthorized access', 'error')
-        return redirect(url_for('accounts'))
+    account = _get(Account, account_id)
     # No FK cascade from transactions to accounts – remove them explicitly.
     RebalanceTransaction.query.filter_by(account_id=account.id).delete()
     PendingRedemption.query.filter_by(account_id=account.id).delete()
@@ -147,10 +209,7 @@ def delete_account(account_id):
 @app.route('/accounts/<int:account_id>/cash', methods=['POST'])
 @login_required
 def update_cash_balance(account_id):
-    account = Account.query.get_or_404(account_id)
-    if account.user_id != current_user.id:
-        flash('Unauthorized', 'error')
-        return redirect(url_for('holdings'))
+    account = _get(Account, account_id)
     cash_balance = request.form.get('cash_balance')
     if cash_balance:
         account.cash_balance = float(cash_balance)
@@ -165,24 +224,24 @@ def update_cash_balance(account_id):
 @app.route('/holdings')
 @login_required
 def holdings():
-    accounts = Account.query.filter_by(user_id=current_user.id).all()
-    exchange_rates = get_exchange_rates(current_user)
+    P = current_portfolio()
+    exchange_rates = get_exchange_rates(P)
     all_holdings = (
         db.session.query(Holding)
         .join(Account)
         .outerjoin(Security)
-        .filter(Account.user_id == current_user.id)
+        .filter(Account.portfolio_id == P.id)
         .order_by(Account.name.asc(), Security.ticker.asc())
         .all()
     )
     return render_template(
         'holdings.html',
         holdings=all_holdings,
-        accounts=accounts,
+        accounts=_p_accounts(),
         exchange_rates=exchange_rates,
-        base_currency=current_user.base_currency,
-        asset_classes=AssetClass.query.order_by(AssetClass.name.asc()).all(),
-        securities=Security.query.order_by(Security.ticker.asc()).all(),
+        base_currency=P.base_currency,
+        asset_classes=_p_asset_classes(),
+        securities=_p_securities(),
     )
 
 
@@ -196,17 +255,14 @@ def add_holding():
     if not all([account_id, security_id, quantity]):
         flash('Account, security, and quantity are required', 'error')
         return redirect(url_for('holdings'))
-    account = Account.query.get_or_404(account_id)
-    if account.user_id != current_user.id:
-        flash('Unauthorized access', 'error')
-        return redirect(url_for('holdings'))
-    security = Security.query.get_or_404(security_id)
+    account = _get(Account, account_id)
+    security = _get(Security, security_id)
     book_value = request.form.get('book_value')
     if price:
         set_security_price(security, float(price))     # a typed price becomes the security's price
     holding = Holding(
-        account_id=account_id,
-        security_id=security_id,
+        account_id=account.id,
+        security_id=security.id,
         quantity=float(quantity),
         price=security.last_price or 0.0,
         book_value=float(book_value) if book_value else None,
@@ -224,16 +280,13 @@ def add_holding():
 @app.route('/holdings/<int:holding_id>/edit', methods=['GET', 'POST'])
 @login_required
 def edit_holding(holding_id):
-    holding = Holding.query.get_or_404(holding_id)
-    if holding.account.user_id != current_user.id:
-        flash('Unauthorized access', 'error')
-        return redirect(url_for('holdings'))
+    holding = _get(Holding, holding_id)
     if request.method == 'POST':
-        holding.account_id = request.form.get('account_id')
+        holding.account_id = _get(Account, request.form.get('account_id')).id
         holding.quantity = float(request.form.get('quantity', 0))
-        holding.security_id = int(request.form.get('security_id'))
+        sec = _get(Security, request.form.get('security_id'))
+        holding.security_id = sec.id
         new_price = float(request.form.get('price') or 0)
-        sec = Security.query.get(holding.security_id)
         if new_price > 0 and new_price != sec.last_price:
             set_security_price(sec, new_price)           # one price per security
         holding.price = sec.last_price or new_price
@@ -246,19 +299,16 @@ def edit_holding(holding_id):
     return render_template(
         'edit_holding.html',
         holding=holding,
-        accounts=Account.query.filter_by(user_id=current_user.id).all(),
-        securities=Security.query.all(),
-        asset_classes=AssetClass.query.order_by(AssetClass.name.asc()).all(),
+        accounts=_p_accounts(),
+        securities=_p_securities(),
+        asset_classes=_p_asset_classes(),
     )
 
 
 @app.route('/holdings/<int:holding_id>/delete', methods=['POST'])
 @login_required
 def delete_holding(holding_id):
-    holding = Holding.query.get_or_404(holding_id)
-    if holding.account.user_id != current_user.id:
-        flash('Unauthorized access', 'error')
-        return redirect(url_for('holdings'))
+    holding = _get(Holding, holding_id)
     ticker = holding.security.ticker
     db.session.delete(holding)
     db.session.commit()
@@ -274,14 +324,18 @@ def update_prices():
     except PriceSheetError as exc:
         flash(f'Price update failed: {exc}', 'error')
         return redirect(url_for('holdings'))
-    candidates = Security.query.filter(Security.auto_update_price.is_(True)).all()
-    matched, unmatched = match_prices_to_securities(prices, candidates)
+    # The price sheet belongs to the login: one pass fills every portfolio.
+    candidates = (Security.query.join(Portfolio, Security.portfolio_id == Portfolio.id)
+                  .filter(Portfolio.user_id == current_user.id, Security.auto_update_price.is_(True)).all())
+    matched, unmatched = match_prices_across_portfolios(prices, candidates)
     by_id = {s.id: s for s in candidates}
     for sec_id, price in matched.items():
-        set_security_price(by_id[sec_id], price)
+        set_security_price(by_id[sec_id], price, propagate=False)
     db.session.commit()
-    flash(f'Updated prices for {len(matched)} securities.', 'success')
-    missing = sorted(s.ticker for s in candidates if s.id not in matched)
+    n_portfolios = len({s.portfolio_id for s in candidates})
+    flash(f'Updated prices for {len({by_id[i].ticker for i in matched})} securities'
+          + (f' across {n_portfolios} portfolios.' if n_portfolios > 1 else '.'), 'success')
+    missing = sorted({s.ticker for s in candidates if s.id not in matched})
     if missing:
         flash('No price in the sheet for: ' + ', '.join(missing), 'warning')
     if unmatched:
@@ -297,15 +351,16 @@ def update_prices():
 def targets():
     return render_template(
         'targets.html',
-        targets=Target.query.filter_by(user_id=current_user.id).all(),
-        accounts=Account.query.filter_by(user_id=current_user.id).all(),
-        asset_classes=AssetClass.query.order_by(AssetClass.name.asc()).all(),
+        targets=Target.query.filter_by(portfolio_id=current_portfolio().id).all(),
+        accounts=_p_accounts(),
+        asset_classes=_p_asset_classes(),
     )
 
 
 @app.route('/targets/update', methods=['POST'])
 @login_required
 def update_targets():
+    P = current_portfolio()
     action = request.form.get('action')
     if action == 'add':
         asset_class_id = request.form.get('asset_class_id')
@@ -314,31 +369,30 @@ def update_targets():
             if not name:
                 flash('Asset class name is required', 'danger')
                 return redirect(url_for('targets'))
-            ac = AssetClass(name=name)
-            db.session.add(ac)
-            db.session.flush()
+            ac = AssetClass.query.filter_by(portfolio_id=P.id, name=name).first()
+            if ac is None:
+                ac = AssetClass(portfolio_id=P.id, name=name)
+                db.session.add(ac)
+                db.session.flush()
             asset_class_id = ac.id
+        else:
+            asset_class_id = _get(AssetClass, asset_class_id).id
         db.session.add(Target(
             user_id=current_user.id,
+            portfolio_id=P.id,
             asset_class_id=asset_class_id,
             target_percentage=float(request.form.get('percentage', 0)),
         ))
         db.session.commit()
         flash('Target added successfully!', 'success')
     elif action == 'update':
-        target = Target.query.get_or_404(request.form.get('target_id'))
-        if target.user_id != current_user.id:
-            flash('Unauthorized', 'danger')
-            return redirect(url_for('targets'))
-        target.asset_class_id = request.form.get('asset_class_id')
+        target = _get(Target, request.form.get('target_id'))
+        target.asset_class_id = _get(AssetClass, request.form.get('asset_class_id')).id
         target.target_percentage = float(request.form.get('percentage', 0))
         db.session.commit()
         flash('Target updated successfully!', 'success')
     elif action == 'delete':
-        target = Target.query.get_or_404(request.form.get('target_id'))
-        if target.user_id != current_user.id:
-            flash('Unauthorized', 'danger')
-            return redirect(url_for('targets'))
+        target = _get(Target, request.form.get('target_id'))
         db.session.delete(target)
         db.session.commit()
         flash('Target deleted successfully!', 'success')
@@ -351,30 +405,33 @@ def update_targets():
 @app.route('/securities')
 @login_required
 def securities():
+    P = current_portfolio()
     all_securities = (
         db.session.query(Security)
         .outerjoin(AssetClass)
+        .filter(Security.portfolio_id == P.id)
         .order_by(AssetClass.name.asc(), Security.ticker.asc())
         .all()
     )
-    prefs = SecurityPreference.query.filter_by(user_id=current_user.id).all()
+    prefs = SecurityPreference.query.filter_by(portfolio_id=P.id).all()
     return render_template(
         'securities.html',
         securities=all_securities,
         preferences={p.security_id: p for p in prefs},
-        accounts=Account.query.filter_by(user_id=current_user.id).all(),
+        accounts=_p_accounts(),
         restriction_types=[
             ('unrestricted', 'Unrestricted - Can be held in any account'),
             ('restricted_to_accounts', 'Restricted - Only specific accounts allowed'),
             ('prioritized_accounts', 'Prioritized - Prefer certain accounts over others'),
         ],
-        asset_classes=AssetClass.query.order_by(AssetClass.name.asc()).all(),
+        asset_classes=_p_asset_classes(),
     )
 
 
 @app.route('/securities/add', methods=['GET', 'POST'])
 @login_required
 def add_security():
+    P = current_portfolio()
     if request.method == 'POST':
         ticker = request.form.get('ticker', '').strip()
         asset_class_id = request.form.get('asset_class_id')
@@ -382,34 +439,51 @@ def add_security():
             flash('Ticker is required', 'error')
         elif not asset_class_id:
             flash('Asset class is required', 'error')
+        elif _ticker_taken(P.id, ticker):
+            flash(f'{ticker} is already in this portfolio.', 'error')
         else:
-            db.session.add(Security(
+            sec = Security(
+                portfolio_id=P.id,
                 ticker=ticker,
                 name=request.form.get('name'),
-                asset_class_id=int(asset_class_id),
+                asset_class_id=_get(AssetClass, asset_class_id).id,
                 currency=request.form.get('currency', 'CAD'),
                 is_public=request.form.get('is_public') == 'on',
                 auto_update_price=request.form.get('auto_update_price') == 'on',
                 is_illiquid=request.form.get('is_illiquid') == 'on',
-                last_price=float(request.form['price']) if request.form.get('price') else None,
-            ))
+            )
+            db.session.add(sec)
+            db.session.flush()
+            if request.form.get('price'):
+                set_security_price(sec, float(request.form['price']))
+            else:   # same listing already priced in another of your portfolios → reuse it
+                sec.last_price = next((o.last_price for o in same_security_elsewhere(sec) if o.last_price), None)
             db.session.commit()
             flash(f'Security {ticker} added.', 'success')
             return redirect(url_for('securities'))
-    return render_template(
-        'add_security.html',
-        asset_classes=AssetClass.query.order_by(AssetClass.name.asc()).all(),
-    )
+    return render_template('add_security.html', asset_classes=_p_asset_classes())
+
+
+def _ticker_taken(portfolio_id, ticker, exclude_id=None):
+    q = Security.query.filter(Security.portfolio_id == portfolio_id,
+                              db.func.upper(Security.ticker) == ticker.strip().upper())
+    if exclude_id:
+        q = q.filter(Security.id != exclude_id)
+    return db.session.query(q.exists()).scalar()
 
 
 @app.route('/securities/<int:security_id>/edit', methods=['GET', 'POST'])
 @login_required
 def edit_security(security_id):
-    security = Security.query.get_or_404(security_id)
+    security = _get(Security, security_id)
     if request.method == 'POST':
-        security.ticker = request.form.get('ticker')
+        ticker = (request.form.get('ticker') or '').strip()
+        if not ticker or _ticker_taken(security.portfolio_id, ticker, exclude_id=security.id):
+            flash(f'{ticker or "Ticker"} is missing or already in this portfolio.', 'error')
+            return redirect(url_for('edit_security', security_id=security.id))
+        security.ticker = ticker
         security.name = request.form.get('name')
-        security.asset_class_id = request.form.get('asset_class_id')
+        security.asset_class_id = _get(AssetClass, request.form.get('asset_class_id')).id
         security.currency = request.form.get('currency', 'CAD')
         security.is_public = request.form.get('is_public') == 'on'
         security.auto_update_price = request.form.get('auto_update_price') == 'on'
@@ -422,14 +496,14 @@ def edit_security(security_id):
     return render_template(
         'edit_security.html',
         security=security,
-        asset_classes=AssetClass.query.order_by(AssetClass.name.asc()).all(),
+        asset_classes=_p_asset_classes(),
     )
 
 
 @app.route('/securities/<int:security_id>/delete', methods=['POST'])
 @login_required
 def delete_security(security_id):
-    s = Security.query.get_or_404(security_id)
+    s = _get(Security, security_id)
     RebalanceTransaction.query.filter_by(security_id=s.id, executed=False).delete()
     PendingRedemption.query.filter_by(security_id=s.id).delete()
     db.session.delete(s)
@@ -441,7 +515,9 @@ def delete_security(security_id):
 @app.route('/securities/<int:security_id>/preference', methods=['POST'])
 @login_required
 def update_security_preference(security_id):
-    security = Security.query.get_or_404(security_id)
+    P = current_portfolio()
+    security = _get(Security, security_id)
+    mine = {a.id for a in _p_accounts()}
     restriction_type = request.form.get('restriction_type')
     if not restriction_type:
         flash('Restriction type is required', 'error')
@@ -450,15 +526,15 @@ def update_security_preference(security_id):
     if restriction_type == 'restricted_to_accounts':
         allowed = request.form.getlist('allowed_accounts[]')
         if allowed:
-            account_config = {'allowed': [int(a) for a in allowed]}
+            account_config = {'allowed': [int(a) for a in allowed if int(a) in mine]}
     elif restriction_type == 'prioritized_accounts':
         account_config = {}
         for level in (1, 2, 3):
             ids = request.form.getlist(f'priority_{level}[]')
             if ids:
-                account_config[f'priority_{level}'] = [int(i) for i in ids]
+                account_config[f'priority_{level}'] = [int(i) for i in ids if int(i) in mine]
     pref = SecurityPreference.query.filter_by(
-        security_id=security_id, user_id=current_user.id
+        security_id=security.id, portfolio_id=P.id
     ).first()
     if pref:
         pref.restriction_type = restriction_type
@@ -466,8 +542,9 @@ def update_security_preference(security_id):
         pref.notes = request.form.get('notes')
     else:
         db.session.add(SecurityPreference(
-            security_id=security_id,
+            security_id=security.id,
             user_id=current_user.id,
+            portfolio_id=P.id,
             restriction_type=restriction_type,
             account_config=account_config,
             notes=request.form.get('notes'),
@@ -483,8 +560,9 @@ def update_security_preference(security_id):
 @app.route('/rebalance')
 @login_required
 def rebalance():
+    P = current_portfolio()
     transactions = RebalanceTransaction.query.filter_by(
-        user_id=current_user.id, executed=False
+        portfolio_id=P.id, executed=False
     ).order_by(RebalanceTransaction.execution_order).all()
 
     # A plan is one coordinated set of trades: if any of them refers to an account or
@@ -493,8 +571,8 @@ def rebalance():
                if t.account is None or (t.security is None and not t.requires_user_selection)]
     if orphans:
         _discard_pending_plan()
-        log.warning('Discarded plan for user %s: %d trade(s) referred to deleted accounts/securities',
-                    current_user.id, len(orphans))
+        log.warning('Discarded plan for portfolio %s: %d trade(s) referred to deleted accounts/securities',
+                    P.id, len(orphans))
         flash('Your plan referred to an account or security that has since been deleted, so it was '
               'discarded. Click "Generate Rebalance Plan" for a new one.', 'warning')
         transactions = []
@@ -516,11 +594,11 @@ def rebalance():
     # Sort by total buy amount descending
     sorted_groups = sorted(grouped.items(), key=lambda x: x[1]['total_buy'], reverse=True)
 
-    exchange_rates = get_exchange_rates(current_user)
+    exchange_rates = get_exchange_rates(P)
     allocation_by_id, allocation_pct_by_id, total_portfolio = calculate_portfolio_allocation(
-        current_user, exchange_rates
+        P, exchange_rates
     )
-    targets = Target.query.filter_by(user_id=current_user.id).all()
+    targets = Target.query.filter_by(portfolio_id=P.id).all()
     comparison_data = sorted([
         {
             'asset_class_name': t.asset_class.name,
@@ -534,80 +612,40 @@ def rebalance():
     return render_template(
         'rebalance.html',
         transactions=transactions,
-        securities=Security.query.all(),
+        securities=_p_securities(),
         comparison_data=comparison_data,
         total_portfolio=total_portfolio,
-        base_currency=current_user.base_currency,
-        accounts=current_user.accounts,
-        balanced_threshold=current_user.balanced_threshold,
+        base_currency=P.base_currency,
+        accounts=P.accounts,
+        balanced_threshold=P.balanced_threshold,
         plan=_plan_summary(),
         pending_redemptions=PendingRedemption.query.filter_by(
-            user_id=current_user.id, status='pending').order_by(PendingRedemption.requested_on).all(),
+            portfolio_id=P.id, status='pending').order_by(PendingRedemption.requested_on).all(),
         today=datetime.utcnow().date(),
     )
 
 
-@app.route('/rebalance/details/<int:asset_class_id>')
-@login_required
-def rebalance_details(asset_class_id):
-    asset_class = AssetClass.query.get_or_404(asset_class_id)
-    all_securities = Security.query.filter_by(asset_class_id=asset_class_id).all()
-    prefs = {
-        p.security_id: p
-        for p in SecurityPreference.query.filter_by(user_id=current_user.id).all()
-    }
-    user_accounts = Account.query.filter_by(user_id=current_user.id).all()
-    security_restrictions = []
-    for security in all_securities:
-        pref = prefs.get(security.id)
-        rtype = pref.restriction_type if pref else 'unrestricted'
-        if rtype == 'restricted_to_accounts':
-            allowed_ids = (pref.account_config or {}).get('allowed', [])
-            allowed_accounts = [a for a in user_accounts if a.id in allowed_ids]
-            priority_accounts = []
-        elif rtype == 'prioritized_accounts':
-            allowed_accounts = user_accounts
-            cfg = pref.account_config or {}
-            priority_accounts = [
-                {'level': lvl, 'accounts': [a for a in user_accounts if a.id in cfg.get(f'priority_{lvl}', [])]}
-                for lvl in (1, 2, 3)
-            ]
-        else:
-            allowed_accounts = user_accounts
-            priority_accounts = []
-        security_restrictions.append({
-            'security': security,
-            'restriction_type': rtype,
-            'allowed_accounts': allowed_accounts,
-            'priority_accounts': priority_accounts,
-            'notes': pref.notes if pref else None,
-        })
-    return render_template(
-        'rebalance_details.html',
-        asset_class=asset_class,
-        security_restrictions=security_restrictions,
-        base_currency=current_user.base_currency,
-    )
-
-
 def _discard_pending_plan():
-    RebalanceTransaction.query.filter_by(user_id=current_user.id, executed=False).delete()
-    current_user.last_plan_summary = None
+    P = current_portfolio()
+    RebalanceTransaction.query.filter_by(portfolio_id=P.id, executed=False).delete()
+    P.last_plan_summary = None
     db.session.commit()
 
 
 def _plan_summary():
+    P = current_portfolio()
     try:
-        return json.loads(current_user.last_plan_summary) if current_user.last_plan_summary else None
+        return json.loads(P.last_plan_summary) if P.last_plan_summary else None
     except ValueError:
         return None
 
 
 def _regenerate_plan(override=None):
     """Run the optimiser and remember the summary (and any taxable-sell opt-in)."""
-    txns, summary = generate_plan(current_user, taxable_override=override)
+    P = current_portfolio()
+    txns, summary = generate_plan(P, taxable_override=override)
     summary['override'] = override
-    current_user.last_plan_summary = json.dumps(summary)
+    P.last_plan_summary = json.dumps(summary)
     db.session.commit()
     return txns
 
@@ -651,11 +689,8 @@ def _parse_date(value):
 @app.route('/redemptions/add', methods=['POST'])
 @login_required
 def add_redemption():
-    account = Account.query.get_or_404(int(request.form['account_id']))
-    if account.user_id != current_user.id:
-        flash('Unauthorized', 'error')
-        return redirect(url_for('rebalance'))
-    security_id = int(request.form['security_id'])
+    account = _get(Account, request.form.get('account_id'))
+    security_id = _get(Security, request.form.get('security_id')).id
     holding = Holding.query.filter_by(account_id=account.id, security_id=security_id).first()
     try:
         units = float(request.form.get('quantity') or 0)
@@ -668,7 +703,7 @@ def add_redemption():
               'error')
         return redirect(url_for('rebalance'))
     db.session.add(PendingRedemption(
-        user_id=current_user.id, account_id=account.id, security_id=security_id, quantity=units,
+        user_id=current_user.id, portfolio_id=account.portfolio_id, account_id=account.id, security_id=security_id, quantity=units,
         requested_on=_parse_date(request.form.get('requested_on')) or datetime.utcnow().date(),
         expected_on=_parse_date(request.form.get('expected_on')),
     ))
@@ -681,8 +716,8 @@ def add_redemption():
 @app.route('/redemptions/<int:redemption_id>/receive', methods=['POST'])
 @login_required
 def receive_redemption(redemption_id):
-    r = PendingRedemption.query.get_or_404(redemption_id)
-    if r.user_id != current_user.id or r.status != 'pending':
+    r = _get(PendingRedemption, redemption_id)
+    if r.status != 'pending':
         flash('Redemption not found', 'error')
         return redirect(url_for('rebalance'))
     account, sec = r.account, r.security
@@ -696,8 +731,9 @@ def receive_redemption(redemption_id):
     except ValueError:
         flash('Proceeds must be a number', 'error')
         return redirect(url_for('rebalance'))
-    fx = get_exchange_rates(current_user)
-    base = current_user.base_currency or 'CAD'
+    P = current_portfolio()
+    fx = get_exchange_rates(P)
+    base = P.base_currency or 'CAD'
     # Book value leaves with the units (average cost); taxable accounts record the gain.
     gain_base = None
     if holding.book_value is not None and holding.quantity > 0:
@@ -712,7 +748,7 @@ def receive_redemption(redemption_id):
         proceeds, sec.currency, account.currency or base, fx)
     # Keep a record like any other sale (also feeds the superficial-loss check).
     db.session.add(RebalanceTransaction(
-        user_id=current_user.id, account_id=account.id, security_id=sec.id, action='SELL',
+        user_id=current_user.id, portfolio_id=P.id, account_id=account.id, security_id=sec.id, action='SELL',
         quantity=r.quantity, price=proceeds / r.quantity, amount=proceeds, currency=sec.currency,
         executed=True, executed_at=datetime.utcnow(), realized_gain=gain_base, execution_order=0,
     ))
@@ -726,8 +762,8 @@ def receive_redemption(redemption_id):
 @app.route('/redemptions/<int:redemption_id>/cancel', methods=['POST'])
 @login_required
 def cancel_redemption(redemption_id):
-    r = PendingRedemption.query.get_or_404(redemption_id)
-    if r.user_id != current_user.id or r.status != 'pending':
+    r = _get(PendingRedemption, redemption_id)
+    if r.status != 'pending':
         flash('Redemption not found', 'error')
         return redirect(url_for('rebalance'))
     r.status = 'cancelled'
@@ -739,23 +775,21 @@ def cancel_redemption(redemption_id):
 @app.route('/rebalance/execute/<int:transaction_id>', methods=['POST'])
 @login_required
 def execute_rebalance_transaction(transaction_id):
-    txn = RebalanceTransaction.query.get_or_404(transaction_id)
-    if txn.user_id != current_user.id:
-        flash('Unauthorized', 'error')
-        return redirect(url_for('rebalance'))
+    txn = _get(RebalanceTransaction, transaction_id)
     if txn.requires_user_selection:
         security_id = request.form.get('security_id')
         if not security_id:
             flash('Please select a security', 'error')
             return redirect(url_for('rebalance'))
-        txn.security_id = int(security_id)
+        txn.security_id = _get(Security, security_id).id
     try:
-        account = Account.query.get_or_404(txn.account_id)
+        account = _get(Account, txn.account_id)
         holding = Holding.query.filter_by(
             account_id=txn.account_id, security_id=txn.security_id
         ).first()
-        fx = get_exchange_rates(current_user)
-        base = current_user.base_currency or 'CAD'
+        P = current_portfolio()
+        fx = get_exchange_rates(P)
+        base = P.base_currency or 'CAD'
         acct_ccy = account.currency or base
         sec_ccy = txn.currency or (txn.security.currency if txn.security else acct_ccy)
         # Trade amount in the account's cash currency, at spot. Book value is kept in
@@ -830,32 +864,155 @@ def execute_rebalance_transaction(transaction_id):
 @app.route('/settings')
 @login_required
 def settings():
-    return render_template('settings.html', user=current_user)
+    P = current_portfolio()
+    others = Portfolio.query.filter(Portfolio.user_id == current_user.id, Portfolio.id != P.id) \
+                            .order_by(Portfolio.id).all()
+    return render_template('settings.html', user=current_user, portfolio=P, other_portfolios=others)
 
 
 @app.route('/settings/update', methods=['POST'])
 @login_required
 def update_settings():
+    """Rebalancing settings belong to the active portfolio; the price sheet to the login."""
+    P = current_portfolio()
     base_currency = request.form.get('base_currency')
     if base_currency not in ('CAD', 'USD'):
         flash('Invalid currency selection', 'error')
         return redirect(url_for('settings'))
-    current_user.base_currency = base_currency
-    price_sheet_id = request.form.get('price_sheet_id', '').strip()
-    if price_sheet_id:
-        current_user.price_sheet_id = price_sheet_id
-    current_user.precision_rebalancing = request.form.get('precision_rebalancing') == 'on'
     try:
-        current_user.balanced_threshold = max(0.0, float(request.form.get('balanced_threshold', 0.5)))
-        current_user.trade_cost = max(0.0, float(request.form.get('trade_cost') or 0))
+        threshold = max(0.0, float(request.form.get('balanced_threshold', 0.5)))
+        trade_cost = max(0.0, float(request.form.get('trade_cost') or 0))
     except ValueError:
         flash('Threshold and trade cost must be numbers', 'error')
         return redirect(url_for('settings'))
+    link = request.form.get('sl_link_portfolio_id') or None
+    if link is not None:
+        other = Portfolio.query.filter_by(id=int(link), user_id=current_user.id).first()
+        link = other.id if other is not None and other.id != P.id else None
+    P.base_currency = base_currency
+    P.precision_rebalancing = request.form.get('precision_rebalancing') == 'on'
+    P.balanced_threshold, P.trade_cost = threshold, trade_cost
     mode = request.form.get('taxable_sell_mode', 'ask')
-    current_user.taxable_sell_mode = mode if mode in ('never', 'ask', 'allow') else 'ask'
+    P.taxable_sell_mode = mode if mode in ('never', 'ask', 'allow') else 'ask'
+    P.sl_link_portfolio_id = link
+    price_sheet_id = request.form.get('price_sheet_id', '').strip()
+    if price_sheet_id:
+        current_user.price_sheet_id = price_sheet_id
     db.session.commit()
     flash('Settings updated successfully', 'success')
     return redirect(url_for('settings'))
+
+
+# ---------------------------------------------------------------------------
+# Routes – Portfolios
+# ---------------------------------------------------------------------------
+# Pages that make sense in any portfolio; after switching we return to one of these
+# (a page about a specific holding/security would 404 in the other portfolio).
+_SWITCH_SAFE_PATHS = {'/dashboard', '/accounts', '/holdings', '/targets', '/securities',
+                      '/rebalance', '/settings', '/portfolios'}
+
+
+def _owned_portfolio(portfolio_id):
+    p = Portfolio.query.filter_by(id=portfolio_id, user_id=current_user.id).first()
+    if p is None:
+        abort(404)
+    return p
+
+
+@app.route('/portfolios')
+@login_required
+def portfolios():
+    rows = []
+    fx = get_exchange_rates(None)
+    for p in Portfolio.query.filter_by(user_id=current_user.id).order_by(Portfolio.id).all():
+        _, _, total = calculate_portfolio_allocation(p, fx)
+        rows.append({'portfolio': p, 'accounts': len(p.accounts), 'securities': len(p.securities),
+                     'total': total})
+    return render_template('portfolios.html', rows=rows)
+
+
+@app.route('/portfolios/add', methods=['POST'])
+@login_required
+def add_portfolio():
+    name = request.form.get('name', '').strip()
+    if not name:
+        flash('Portfolio name is required', 'error')
+        return redirect(url_for('portfolios'))
+    src = current_portfolio()
+    new = Portfolio(user_id=current_user.id, name=name, base_currency=src.base_currency)
+    db.session.add(new)
+    db.session.flush()
+    if request.form.get('copy_setup') == 'on':
+        _copy_setup(src, new)
+    db.session.commit()
+    session['portfolio_id'] = new.id
+    flash(f'Portfolio "{name}" created and selected.'
+          + (' Asset classes, securities and targets were copied – it has no accounts or holdings yet.'
+             if request.form.get('copy_setup') == 'on' else ''), 'success')
+    return redirect(url_for('accounts'))
+
+
+def _copy_setup(src, dst):
+    """One-off convenience copy of asset classes, securities and targets. The copies are
+    independent rows: nothing links the two portfolios afterwards (prices excepted)."""
+    ac_map = {}
+    for ac in src.asset_classes:
+        ac_map[ac.id] = AssetClass(portfolio_id=dst.id, name=ac.name)
+        db.session.add(ac_map[ac.id])
+    db.session.flush()
+    for sec in src.securities:
+        db.session.add(Security(
+            portfolio_id=dst.id, ticker=sec.ticker, name=sec.name, asset_class_id=ac_map[sec.asset_class_id].id,
+            currency=sec.currency, is_public=sec.is_public, auto_update_price=sec.auto_update_price,
+            is_illiquid=sec.is_illiquid, last_price=sec.last_price))
+    for t in src.targets:
+        db.session.add(Target(user_id=dst.user_id, portfolio_id=dst.id,
+                              asset_class_id=ac_map[t.asset_class_id].id, target_percentage=t.target_percentage))
+
+
+@app.route('/portfolios/<int:portfolio_id>/switch', methods=['POST'])
+@login_required
+def switch_portfolio(portfolio_id):
+    p = _owned_portfolio(portfolio_id)
+    session['portfolio_id'] = p.id
+    back = urlparse(request.referrer or '').path
+    return redirect(back if back in _SWITCH_SAFE_PATHS else url_for('dashboard'))
+
+
+@app.route('/portfolios/<int:portfolio_id>/rename', methods=['POST'])
+@login_required
+def rename_portfolio(portfolio_id):
+    p = _owned_portfolio(portfolio_id)
+    name = request.form.get('name', '').strip()
+    if name:
+        p.name = name
+        db.session.commit()
+        flash(f'Renamed to "{name}".', 'success')
+    return redirect(url_for('portfolios'))
+
+
+@app.route('/portfolios/<int:portfolio_id>/delete', methods=['POST'])
+@login_required
+def delete_portfolio(portfolio_id):
+    p = _owned_portfolio(portfolio_id)
+    if Portfolio.query.filter_by(user_id=current_user.id).count() <= 1:
+        flash("You can't delete your only portfolio.", 'error')
+        return redirect(url_for('portfolios'))
+    if request.form.get('confirm_name', '').strip() != p.name:
+        flash(f'Type the portfolio name ("{p.name}") to confirm deleting it.', 'error')
+        return redirect(url_for('portfolios'))
+    name = p.name
+    # No ORM cascade for these – remove explicitly, and unhook any superficial-loss links.
+    RebalanceTransaction.query.filter_by(portfolio_id=p.id).delete()
+    PendingRedemption.query.filter_by(portfolio_id=p.id).delete()
+    Portfolio.query.filter_by(sl_link_portfolio_id=p.id).update({'sl_link_portfolio_id': None})
+    db.session.delete(p)
+    db.session.commit()
+    if session.get('portfolio_id') == portfolio_id:
+        session.pop('portfolio_id', None)
+    g.pop('portfolio', None)
+    flash(f'Portfolio "{name}" and everything in it was deleted.', 'success')
+    return redirect(url_for('portfolios'))
 
 
 # ---------------------------------------------------------------------------
@@ -907,8 +1064,8 @@ def add_exchange_rate():
 @app.route('/api/holdings', methods=['GET'])
 @login_required
 def api_get_holdings():
-    accounts = Account.query.filter_by(user_id=current_user.id).all()
-    exchange_rates = get_exchange_rates(current_user)
+    accounts = _p_accounts()
+    exchange_rates = get_exchange_rates(current_portfolio())
     return jsonify([
         {
             'account': account.name,
@@ -931,14 +1088,14 @@ def api_get_holdings():
 @app.route('/api/portfolio/summary', methods=['GET'])
 @login_required
 def api_portfolio_summary():
-    exchange_rates = get_exchange_rates(current_user)
-    allocation, allocation_pct, total_value = calculate_portfolio_allocation(
-        current_user, exchange_rates
-    )
+    P = current_portfolio()
+    exchange_rates = get_exchange_rates(P)
+    allocation, allocation_pct, total_value = calculate_portfolio_allocation(P, exchange_rates)
     return jsonify({
+        'portfolio': P.name,
         'total_value': total_value,
-        'base_currency': current_user.base_currency,
-        'num_accounts': len(current_user.accounts),
+        'base_currency': P.base_currency,
+        'num_accounts': len(P.accounts),
         'asset_allocation': dict(allocation),
         'asset_allocation_pct': dict(allocation_pct),
     })
@@ -964,33 +1121,7 @@ def forbidden(error):
 # ---------------------------------------------------------------------------
 # Startup
 # ---------------------------------------------------------------------------
-# Columns added after the initial schema. create_all() never alters existing
-# tables, so add any that are missing (SQLite and Postgres both accept this DDL).
-_ADDED_COLUMNS = [
-    ('users', 'trade_cost', 'FLOAT DEFAULT 0'),
-    ('users', 'taxable_sell_mode', "VARCHAR(10) DEFAULT 'ask'"),
-    ('users', 'precision_rebalancing', 'BOOLEAN DEFAULT TRUE'),
-    ('holdings', 'book_value', 'FLOAT'),
-    ('rebalance_transactions', 'realized_gain', 'FLOAT'),
-    ('securities', 'last_price', 'FLOAT'),
-    ('users', 'last_plan_summary', 'TEXT'),
-    ('securities', 'is_illiquid', 'BOOLEAN DEFAULT FALSE'),
-]
-
-
-def _migrate_columns():
-    from sqlalchemy import inspect, text
-    insp = inspect(db.engine)
-    tables = set(insp.get_table_names())
-    with db.engine.begin() as conn:
-        for table, column, ddl in _ADDED_COLUMNS:
-            if table not in tables:
-                continue
-            if column not in {c['name'] for c in insp.get_columns(table)}:
-                conn.execute(text(f'ALTER TABLE {table} ADD COLUMN {column} {ddl}'))
-                log.info('Migrated: added %s.%s', table, column)
-
-
+# Schema/data upgrades for existing databases live in migrations.py.
 def _backfill_prices():
     """One price per security: fill Security.last_price from holdings where missing,
     then repair holdings stuck at price 0."""
@@ -1013,7 +1144,7 @@ def _backfill_prices():
 def _init_db():
     with app.app_context():
         db.create_all()
-        _migrate_columns()
+        migrations.run_all()
         _backfill_prices()
         log.info('Database schema ensured.')
 
