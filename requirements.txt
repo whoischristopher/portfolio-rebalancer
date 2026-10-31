@@ -13,9 +13,6 @@ SQLAlchemy==2.0.23
 # HTTP requests
 requests==2.31.0
 
-# Environment variables
-python-dotenv==1.0.0
-
 # Production server
 gunicorn==21.2.0
 
@@ -23,14 +20,7 @@ gunicorn==21.2.0
 scipy>=1.11
 numpy>=1.24
 
-# Financial data
-yfinance==0.2.33
-
-# Forex rates (optional alternative)
-forex-python==1.8
-
 google-api-python-client
 google-auth
-google-auth-oauthlib
 google-auth-httplib2
 

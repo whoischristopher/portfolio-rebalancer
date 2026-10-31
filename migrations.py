@@ -27,13 +27,9 @@ log = logging.getLogger(__name__)
 
 # Columns added after the initial schema (table, column, DDL).
 ADDED_COLUMNS = [
-    ('users', 'trade_cost', 'FLOAT DEFAULT 0'),
-    ('users', 'taxable_sell_mode', "VARCHAR(10) DEFAULT 'ask'"),
-    ('users', 'precision_rebalancing', 'BOOLEAN DEFAULT TRUE'),
     ('holdings', 'book_value', 'FLOAT'),
     ('rebalance_transactions', 'realized_gain', 'FLOAT'),
     ('securities', 'last_price', 'FLOAT'),
-    ('users', 'last_plan_summary', 'TEXT'),
     ('securities', 'is_illiquid', 'BOOLEAN DEFAULT FALSE'),
 ]
 
@@ -51,6 +47,18 @@ UNIQUE_REPLACEMENTS = {
 
 DEFAULT_PORTFOLIO_NAME = 'My Portfolio'
 
+# Columns nothing reads any more (table, column). Dropped at the end of run_all, after
+# the steps that still need them (the users.* settings seed each user's first portfolio).
+DROPPED_COLUMNS = [
+    ('users', 'base_currency'), ('users', 'balanced_threshold'), ('users', 'precision_rebalancing'),
+    ('users', 'trade_cost'), ('users', 'taxable_sell_mode'), ('users', 'last_plan_summary'),
+    ('users', 'trading_costs_enabled'),
+    ('accounts', 'priority'), ('accounts', 'notes'),       # never set or read
+    ('securities', 'is_public'),                            # had no effect on anything
+]
+_LEGACY_USER_SETTINGS = ('base_currency', 'balanced_threshold', 'precision_rebalancing', 'trade_cost',
+                         'taxable_sell_mode', 'last_plan_summary')
+
 
 def run_all():
     add_missing_columns()
@@ -60,6 +68,7 @@ def run_all():
     repair_cross_portfolio_refs()
     add_portfolio_indexes()
     clear_registered_book_values()
+    drop_dead_columns()                # last: earlier steps may still read these
 
 
 # --------------------------------------------------------------------------- #
@@ -75,17 +84,29 @@ def add_missing_columns():
                 log.info('Migrated: added %s.%s', table, column)
 
 
+def _legacy_user_settings(user_id):
+    """Rebalancing settings from the pre-portfolio users table, if those columns still exist."""
+    have = {c['name'] for c in inspect(db.engine).get_columns('users')}
+    cols = [c for c in _LEGACY_USER_SETTINGS if c in have]
+    if not cols:
+        return {}
+    row = db.session.execute(text(f"SELECT {', '.join(cols)} FROM users WHERE id = :id"),
+                             {'id': user_id}).mappings().first()
+    return dict(row) if row else {}
+
+
 def new_default_portfolio(user, name=DEFAULT_PORTFOLIO_NAME):
-    """A portfolio initialised from the (legacy) settings stored on the user row."""
+    """A user's first portfolio – carrying their old per-user settings when upgrading."""
     from models import Portfolio
+    old = _legacy_user_settings(user.id)
     return Portfolio(
         user_id=user.id, name=name,
-        base_currency=user.base_currency or 'CAD',
-        balanced_threshold=user.balanced_threshold if user.balanced_threshold is not None else 0.5,
-        precision_rebalancing=True if user.precision_rebalancing is None else bool(user.precision_rebalancing),
-        trade_cost=user.trade_cost or 0.0,
-        taxable_sell_mode=user.taxable_sell_mode or 'ask',
-        last_plan_summary=user.last_plan_summary,
+        base_currency=old.get('base_currency') or 'CAD',
+        balanced_threshold=old['balanced_threshold'] if old.get('balanced_threshold') is not None else 0.5,
+        precision_rebalancing=True if old.get('precision_rebalancing') is None else bool(old['precision_rebalancing']),
+        trade_cost=old.get('trade_cost') or 0.0,
+        taxable_sell_mode=old.get('taxable_sell_mode') or 'ask',
+        last_plan_summary=old.get('last_plan_summary'),
     )
 
 
@@ -150,7 +171,7 @@ def repair_cross_portfolio_refs():
             if clone is None:
                 clone = Security(portfolio_id=pid, ticker=sec.ticker, name=sec.name,
                                  asset_class=ac_in(pid, sec.asset_class), currency=sec.currency,
-                                 is_public=sec.is_public, auto_update_price=sec.auto_update_price,
+                                 auto_update_price=sec.auto_update_price,
                                  is_illiquid=sec.is_illiquid, last_price=sec.last_price)
                 db.session.add(clone); db.session.flush()
             sec_cache[key] = clone
@@ -248,3 +269,24 @@ def clear_registered_book_values():
     if n:
         db.session.commit()
         log.info('Migrated: cleared book value on %d holding(s) in registered accounts', n)
+
+
+def drop_dead_columns():
+    """Remove columns the app no longer uses (see DROPPED_COLUMNS). Uses ALTER TABLE …
+    DROP COLUMN (SQLite 3.35+, PostgreSQL). If the database can't, the column is simply
+    left in place – harmless, since nothing reads it."""
+    # Earlier steps may have left the ORM session in an open read transaction; on SQLite
+    # that lock blocks ALTER TABLE ("database is locked"). Close it first.
+    db.session.commit()
+    db.session.remove()
+    insp = inspect(db.engine)
+    tables = set(insp.get_table_names())
+    for table, column in DROPPED_COLUMNS:
+        if table not in tables or column not in {c['name'] for c in insp.get_columns(table)}:
+            continue
+        try:
+            with db.engine.begin() as conn:
+                conn.execute(text(f'ALTER TABLE {table} DROP COLUMN {column}'))
+            log.info('Migrated: dropped unused column %s.%s', table, column)
+        except Exception as exc:                       # pragma: no cover – old SQLite
+            log.warning('Could not drop unused column %s.%s (%s); leaving it in place', table, column, exc)

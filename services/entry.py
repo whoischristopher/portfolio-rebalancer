@@ -123,7 +123,7 @@ def resolve_security(portfolio, ticker, *, name=None, asset_class_name=None, cur
         if ccy not in CURRENCIES:
             raise EntryError(f'Currency must be one of {", ".join(CURRENCIES)}.')
         sec = Security(portfolio_id=portfolio.id, ticker=ticker, name=(name or '').strip() or None,
-                       asset_class_id=ac.id, currency=ccy, is_public=not is_illiquid,
+                       asset_class_id=ac.id, currency=ccy,
                        auto_update_price=not is_illiquid, is_illiquid=bool(is_illiquid))
         db.session.add(sec)
         db.session.flush()
