@@ -8,10 +8,10 @@
 <div class="page-head">
     <div>
         <h1>{{ active_portfolio.name }}</h1>
+        {% if accounts %}{% include "_prices.html" %}{% endif %}
     </div>
     {% if status.complete %}
     <div class="page-actions">
-        <a href="{{ url_for('holdings') }}" class="btn btn-secondary">Holdings</a>
         <form method="POST" action="{{ url_for('generate_rebalance') }}"><button type="submit" class="btn btn-primary">Generate rebalancing plan</button></form>
     </div>
     {% endif %}

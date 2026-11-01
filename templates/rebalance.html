@@ -2,15 +2,37 @@
 {% block title %}Rebalance - Portfolio Rebalancer{% endblock %}
 
 {% block content %}
-<h1 style="margin-bottom: 1.5rem;">Rebalance Plan</h1>
+<div class="page-head">
+    <div>
+        <h1>Rebalance plan</h1>
+        {% include "_prices.html" %}
+    </div>
+    <form method="POST" action="{{ url_for('generate_rebalance') }}">
+        <button type="submit" class="btn btn-primary">Generate rebalancing plan</button>
+    </form>
+</div>
 
 <div class="card">
-    <h2>Portfolio Summary</h2>
-    <p style="font-size: 1.5rem; color: var(--ink);"><strong>Total Portfolio Value:</strong> {{ base_currency }} ${{ "{:,.2f}".format(total_portfolio) }}</p>
-    
-    <form method="POST" action="{{ url_for('generate_rebalance') }}" style="margin-top: 1rem;">
-        <button type="submit" class="btn btn-primary">Generate Rebalance Plan</button>
-    </form>
+    <div class="stats">
+        <div>
+            <div class="stat-label">Portfolio value</div>
+            <div class="stat-value num">{{ "{:,.2f}".format(total_portfolio) }} <small>{{ base_currency }}</small></div>
+        </div>
+        {% if plan and plan.generated_at %}
+        <div>
+            <div class="stat-label">This plan</div>
+            <div class="small" style="margin-top: 0.3rem;">
+                Generated <time data-local datetime="{{ plan.generated_at }}">{{ plan.generated_at[:16]|replace('T', ' ') }} UTC</time>,
+                using prices from {% if plan.prices_as_of %}<time data-local datetime="{{ plan.prices_as_of }}">{{ plan.prices_as_of[:16]|replace('T', ' ') }} UTC</time>{% else %}your typed prices{% endif %}.
+            </div>
+        </div>
+        {% endif %}
+    </div>
+    {% if plan and transactions and price_status.as_of and plan.prices_as_of is defined and (plan.prices_as_of or '') < price_status.as_of %}
+    <div class="alert alert-warning" style="margin-top: 1rem;">
+        Prices have been updated since this plan was made, so its share counts may be off. Generate the plan again before trading.
+    </div>
+    {% endif %}
 </div>
 
 {% if plan and plan.redemptions %}

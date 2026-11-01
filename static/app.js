@@ -202,10 +202,43 @@
     }
   });
 
+  /* ---------- Prices: local times + background refresh when stale ---------- */
+  function localTimes(root) {
+    const today = new Date().toDateString();
+    root.querySelectorAll('time[data-local]').forEach((t) => {
+      const d = new Date(t.getAttribute('datetime'));
+      if (isNaN(d)) return;
+      const time = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+      t.textContent = d.toDateString() === today ? `today ${time}`
+        : `${d.toLocaleDateString([], { month: 'short', day: 'numeric' })}, ${time}`;
+      t.title = d.toLocaleString();
+    });
+  }
+  async function refreshIfStale() {
+    const box = document.querySelector('[data-price-status][data-stale="1"]');
+    if (!box) return;
+    const note = box.querySelector('[data-price-note]');
+    if (note) { note.className = 'small muted'; note.textContent = 'updating…'; }
+    try {
+      const r = await (await fetch('/api/prices/refresh-if-stale', { method: 'POST', credentials: 'same-origin' })).json();
+      if (r.refreshed) { if (note) note.textContent = 'updated – reloading'; window.location.reload(); return; }
+      if (note) {
+        note.className = 'small negative';
+        note.textContent = r.error ? 'couldn\u2019t update' : '';
+        note.title = r.error || '';
+      }
+    } catch (_) {
+      if (note) { note.className = 'small negative'; note.textContent = 'couldn\u2019t update'; }
+    }
+  }
+
   /* ---------- Init ---------- */
   document.addEventListener('DOMContentLoaded', () => {
     document.querySelectorAll('[data-account-scope]').forEach(syncRegistered);
     document.querySelectorAll('.entry-row .f-ticker').forEach((i) => { if (i.value.trim()) checkTicker(i.closest('.entry-row')); });
     document.querySelectorAll('form').forEach(updateTargetTotal);
+    localTimes(document);
+    // Skip the background refresh right after a form post failed to update prices.
+    if (!document.querySelector('.alert-error')) refreshIfStale();
   });
 })();

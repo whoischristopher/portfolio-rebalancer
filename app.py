@@ -135,7 +135,13 @@ def _inject_portfolios():
             'registered_account_types': REGISTERED_ACCOUNT_TYPES,
             'non_registered_account_types': NON_REGISTERED_ACCOUNT_TYPES,
             'currencies': CURRENCIES,
-            'nav_setup': setup_status(current_portfolio())}
+            'nav_setup': setup_status(current_portfolio()),
+            'price_status': {
+                'as_of': current_user.prices_updated_at.isoformat() + 'Z' if current_user.prices_updated_at else None,
+                'has_sheet': bool(current_user.price_sheet_id),
+                'stale': prices_stale(current_user),
+                'minutes': current_user.price_refresh_minutes if current_user.price_refresh_minutes is not None else 15,
+            }}
 
 
 def setup_status(P):
@@ -415,31 +421,71 @@ def delete_holding(holding_id):
     return redirect(url_for('holdings'))
 
 
-@app.route('/update_prices', methods=['POST'])
-@login_required
-def update_prices():
-    try:
-        prices = fetch_prices_from_user_sheet(current_user)
-    except PriceSheetError as exc:
-        flash(f'Price update failed: {exc}', 'error')
-        return redirect(url_for('holdings'))
-    # The price sheet belongs to the login: one pass fills every portfolio.
+def refresh_prices(user):
+    """Read the user's price sheet once and apply it to every portfolio of theirs.
+    Securities with auto-update off (private funds, typed prices) are left alone.
+    Raises PriceSheetError. Returns a summary dict."""
+    prices = fetch_prices_from_user_sheet(user)
     candidates = (Security.query.join(Portfolio, Security.portfolio_id == Portfolio.id)
-                  .filter(Portfolio.user_id == current_user.id, Security.auto_update_price.is_(True)).all())
+                  .filter(Portfolio.user_id == user.id, Security.auto_update_price.is_(True)).all())
     matched, unmatched = match_prices_across_portfolios(prices, candidates)
     by_id = {s.id: s for s in candidates}
     for sec_id, price in matched.items():
         set_security_price(by_id[sec_id], price, propagate=False)
+    user.prices_updated_at = datetime.utcnow()
     db.session.commit()
-    n_portfolios = len({s.portfolio_id for s in candidates})
-    flash(f'Updated prices for {len({by_id[i].ticker for i in matched})} securities'
-          + (f' across {n_portfolios} portfolios.' if n_portfolios > 1 else '.'), 'success')
-    missing = sorted({s.ticker for s in candidates if s.id not in matched})
-    if missing:
-        flash('No price in the sheet for: ' + ', '.join(missing), 'warning')
-    if unmatched:
-        flash('Sheet tickers not matching any security: ' + ', '.join(sorted(unmatched)[:15]), 'warning')
-    return redirect(url_for('holdings'))
+    return {'updated': len({by_id[i].ticker for i in matched}),
+            'portfolios': len({s.portfolio_id for s in candidates}),
+            'missing': sorted({s.ticker for s in candidates if s.id not in matched}),
+            'unmatched': sorted(unmatched)}
+
+
+def prices_stale(user):
+    """True when auto-refresh is on, a sheet is configured and the last read is older
+    than the user's refresh interval."""
+    minutes = user.price_refresh_minutes if user.price_refresh_minutes is not None else 15
+    if minutes <= 0 or not user.price_sheet_id:
+        return False
+    last = user.prices_updated_at
+    return last is None or (datetime.utcnow() - last).total_seconds() > minutes * 60
+
+
+def _back(default='holdings'):
+    """Redirect target: the page the request came from, if it's one of ours."""
+    path = urlparse(request.referrer or '').path
+    return path if path in _SWITCH_SAFE_PATHS else url_for(default)
+
+
+@app.route('/update_prices', methods=['POST'])
+@login_required
+def update_prices():
+    try:
+        r = refresh_prices(current_user)
+    except PriceSheetError as exc:
+        flash(f'Price update failed: {exc}', 'error')
+        return redirect(_back())
+    flash(f"Updated prices for {r['updated']} securities"
+          + (f" across {r['portfolios']} portfolios." if r['portfolios'] > 1 else '.'), 'success')
+    if r['missing']:
+        flash('No price in the sheet for: ' + ', '.join(r['missing']), 'warning')
+    if r['unmatched']:
+        flash('Sheet tickers not matching any security: ' + ', '.join(r['unmatched'][:15]), 'warning')
+    return redirect(_back())
+
+
+@app.route('/api/prices/refresh-if-stale', methods=['POST'])
+@login_required
+def api_refresh_prices_if_stale():
+    """Called in the background by the Dashboard and Rebalance pages."""
+    if not prices_stale(current_user):
+        return jsonify({'refreshed': False})
+    try:
+        r = refresh_prices(current_user)
+    except PriceSheetError as exc:
+        db.session.rollback()
+        return jsonify({'refreshed': False, 'error': str(exc)})
+    return jsonify({'refreshed': True, 'updated': r['updated'],
+                    'as_of': current_user.prices_updated_at.isoformat() + 'Z'})
 
 
 # ---------------------------------------------------------------------------
@@ -946,6 +992,9 @@ def _regenerate_plan(override=None):
     P = current_portfolio()
     txns, summary = generate_plan(P, taxable_override=override)
     summary['override'] = override
+    summary['generated_at'] = datetime.utcnow().isoformat() + 'Z'
+    summary['prices_as_of'] = (current_user.prices_updated_at.isoformat() + 'Z'
+                               if current_user.prices_updated_at else None)
     P.last_plan_summary = json.dumps(summary)
     db.session.commit()
     return txns
@@ -956,6 +1005,13 @@ def _regenerate_plan(override=None):
 def generate_rebalance():
     # 'allow' comes from the "include taxable sells" button on the Ask-mode offer
     override = request.form.get('taxable') if request.form.get('taxable') in ('allow', 'never') else None
+    # Share counts and cash use come straight from prices, so don't plan on stale ones.
+    if prices_stale(current_user):
+        try:
+            refresh_prices(current_user)
+        except PriceSheetError as exc:
+            db.session.rollback()
+            flash(f'Prices could not be updated ({exc}) – the plan uses the last prices you have.', 'warning')
     try:
         txns = _regenerate_plan(override)
         flash(f'Generated {len(txns)} rebalance transactions', 'success')
@@ -1199,6 +1255,13 @@ def update_settings():
     price_sheet_id = request.form.get('price_sheet_id', '').strip()
     if price_sheet_id:
         current_user.price_sheet_id = price_sheet_id
+    raw = (request.form.get('price_refresh_minutes') or '').strip()
+    if raw:
+        try:
+            current_user.price_refresh_minutes = max(0, min(int(float(raw)), 24 * 60))
+        except ValueError:
+            flash('Price refresh interval must be a whole number of minutes', 'error')
+            return redirect(url_for('settings'))
     db.session.commit()
     flash('Settings updated successfully', 'success')
     return redirect(url_for('settings'))

@@ -33,6 +33,8 @@ ADDED_COLUMNS = [
     ('securities', 'is_illiquid', 'BOOLEAN DEFAULT FALSE'),
     ('securities', 'is_managed', 'BOOLEAN DEFAULT FALSE'),
     ('holdings', 'book_value_as_of', 'DATE'),
+    ('users', 'prices_updated_at', 'DATETIME'),
+    ('users', 'price_refresh_minutes', 'INTEGER DEFAULT 15'),
 ]
 
 # Tables scoped to a portfolio. Those with a user_id column are backfilled from it.

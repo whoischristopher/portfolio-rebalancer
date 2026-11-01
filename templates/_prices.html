@@ -1,0 +1,15 @@
+{# "Prices as of …" + Update button. With data-stale="1", app.js refreshes in the background. #}
+<div class="price-status" data-price-status data-stale="{{ 1 if price_status.stale else 0 }}">
+    {% if price_status.has_sheet %}
+        <span class="muted small">Prices as of
+            {% if price_status.as_of %}<time data-local datetime="{{ price_status.as_of }}">{{ price_status.as_of[:16]|replace('T', ' ') }} UTC</time>{% else %}never{% endif %}
+        </span>
+        <span class="small" data-price-note></span>
+        <form method="POST" action="{{ url_for('update_prices') }}" class="inline">
+            <button type="submit" class="btn btn-secondary btn-sm">Update prices</button>
+        </form>
+    {% else %}
+        <span class="muted small">No price sheet yet – prices only change when you type them.
+            <a href="{{ url_for('settings') }}#price_sheet_id">Add one in Settings</a></span>
+    {% endif %}
+</div>

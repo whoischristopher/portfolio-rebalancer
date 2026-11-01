@@ -91,6 +91,14 @@
                 One sheet prices every portfolio: list each ticker once, even if several portfolios hold it.
             </small>
         </div>
+        <div class="form-group" style="max-width: 22rem;">
+            <label for="price_refresh_minutes">Refresh prices automatically after (minutes)</label>
+            <input type="number" min="0" max="1440" step="1" id="price_refresh_minutes" name="price_refresh_minutes"
+                   value="{{ user.price_refresh_minutes if user.price_refresh_minutes is not none else 15 }}">
+            <small>When prices are older than this, the Dashboard, Holdings and Rebalance pages update them in the
+                background, and generating a plan updates them first. 0 turns this off – prices then change only when you
+                click Update prices. GOOGLEFINANCE quotes can be up to 20 minutes behind, so very short intervals don't help.</small>
+        </div>
         <button type="submit" class="btn btn-success">Save Settings</button>
 </div>
 </form>

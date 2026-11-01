@@ -8,11 +8,7 @@
         <h1>Holdings</h1>
         <p>Add holdings by ticker in each account. A ticker you haven't used yet becomes a new security on the spot.</p>
     </div>
-    <div class="page-actions">
-        <form method="POST" action="{{ url_for('update_prices') }}">
-            <button type="submit" class="btn btn-secondary">Update prices</button>
-        </form>
-    </div>
+    <div class="page-actions">{% include "_prices.html" %}</div>
 </div>
 
 {{ E.entry_datalists(securities, asset_classes) }}
