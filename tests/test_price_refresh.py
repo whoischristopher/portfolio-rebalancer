@@ -36,7 +36,9 @@ def priced(monkeypatch):
         sheet["calls"] += 1
         if sheet["error"]:
             raise appmod.PriceSheetError(sheet["error"])
-        return dict(sheet["prices"])
+        from services.prices import SheetPrices
+        p = sheet["prices"]
+        return SheetPrices(p, getattr(p, "tickers", None))     # keep column A's full ticker list
     monkeypatch.setattr(appmod, "fetch_prices_from_user_sheet", fake_fetch)
 
     with app.app_context():
