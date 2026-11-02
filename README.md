@@ -20,6 +20,7 @@ superficial losses in check. Built for Canadian investors (CAD base currency, US
 - [Installation](#installation)
 - [Upgrading](#upgrading)
 - [Development](#development)
+- [Dependencies](#dependencies)
 
 ## Features at a glance
 - Sign in with Google; several fully separate portfolios per login (e.g. yours and your spouse's)
@@ -195,7 +196,8 @@ Runs as a single Docker container with a SQLite database in `./data`.
 ## Upgrading
 What changed in each release: [CHANGELOG.md](CHANGELOG.md).
 
-Pull, rebuild and restart. Schema and data changes run automatically on startup (`migrations.py`, no Alembic) and are
+Pull, rebuild and restart (`docker compose up -d --build` – the code is mounted into the container, but new
+library versions only arrive with a rebuild). Schema and data changes run automatically on startup (`migrations.py`, no Alembic) and are
 safe to run repeatedly. **Back up `data/portfolio.db` first** – some steps can't be undone:
 - Pre-portfolio databases move into a portfolio called "My Portfolio" with your old settings; the securities and
   asset-class tables are rebuilt so tickers are unique per portfolio instead of globally.
@@ -212,3 +214,19 @@ python -m pytest tests/ -q
 Layout: `app.py` (routes), `models.py`, `migrations.py`, `rebalancer.py` (database ↔ optimiser), `services/`
 (`optimizer.py`, `prices.py`, `fx.py`, `portfolio.py`, `entry.py` for data entry, `money.py` for amount formatting),
 `templates/`, `static/` (`app.css`, `app.js`), `tests/`.
+
+## Dependencies
+- `requirements.in` lists the direct dependencies with version ranges. `requirements.txt` is the **lock file**: every
+  package, including dependencies of dependencies, pinned to an exact version with hashes, so each build installs
+  exactly what was tested and pip refuses a tampered download.
+- **Changing a dependency:** edit `requirements.in`, then regenerate the lock in the same Python as the image:
+  ```
+  docker run --rm -v "$PWD":/w -w /w -u "$(id -u):$(id -g)" -e HOME=/tmp python:3.13-slim sh scripts/lock-deps.sh
+  ```
+  Add `--upgrade` at the end to move every pin to the newest version the ranges allow.
+- **Dependabot** opens update PRs against `develop` every Saturday (Python packages grouped into one PR for
+  minor/patch, major versions separately; the base image; GitHub Actions monthly).
+- **CI** (`.github/workflows/ci.yml`) runs on every PR and push to `main`/`develop`: the lock file must match
+  `requirements.in`, the tests run inside the built Docker image, and `pip-audit` fails on any known vulnerability.
+  The audit also runs every Monday, since new CVEs get published for versions that haven't changed.
+- Merge an update PR when CI is green, then on the server: `git pull && docker compose up -d --build`.

@@ -1,0 +1,19 @@
+# Keep secrets, data and dev clutter out of the image.
+.git
+.github
+.env
+.env.*
+data/
+logs/
+*.db
+*.sqlite
+*.sqlite3
+__pycache__/
+*.py[cod]
+.pytest_cache/
+venv/
+.venv/
+tests/
+*.bak
+*.old
+.DS_Store
