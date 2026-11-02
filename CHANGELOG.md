@@ -6,6 +6,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-11-02
+
+> **Upgrading:** back up `data/portfolio.db`, then `git pull && docker compose up -d --build`. The image moves to
+> Python 3.13 with new library versions, so the rebuild is required; a new column is added automatically on startup.
+
 ### Added
 - **Record the actual fill** when a trade is executed: fill price, quantity, commission and trade date, pre-filled
   with the plan's numbers. Holdings, cash, book value and realised gain use the actual fill; the planned quantity and
@@ -29,11 +34,13 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - Docker image moves to **Python 3.13** (`python:3.13-slim`); current NumPy and SciPy need 3.12 or later.
 - A `.dockerignore` keeps `.env`, the database, logs, `.git` and tests out of the image.
 - Login lookup uses `db.session.get()` instead of the legacy `Query.get()`.
+- CI's GitHub Actions are pinned to full commit hashes (kept current by Dependabot).
+- `gcc` is no longer installed in the image (every dependency installs from a prebuilt wheel); `apt-get` uses
+  `--no-install-recommends`.
 - The superficial-loss window counts from each trade's trade date rather than when it was recorded in the app.
   Existing trades get their recorded date as their trade date (automatic migration).
 - With a per-trade cost set in Settings, recording a trade without entering a commission now uses that cost
   (added to book value and taken from cash).
-
 - The background price refresh no longer hides securities the sheet has no price for (the Update prices
   button's warnings are replaced by the banner, which every refresh feeds). New column `users.price_sheet_snapshot`
   (automatic migration).
@@ -116,6 +123,7 @@ November 2025 beta.
 Initial public pre-release (tag `v1-develop`): heuristic rebalancer, Google sign-in, accounts, holdings and
 target allocation.
 
-[Unreleased]: https://github.com/whoischristopher/portfolio-rebalancer/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/whoischristopher/portfolio-rebalancer/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/whoischristopher/portfolio-rebalancer/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/whoischristopher/portfolio-rebalancer/compare/v1-develop...v1.0.0
 [Beta]: https://github.com/whoischristopher/portfolio-rebalancer/releases/tag/v1-develop
