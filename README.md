@@ -174,6 +174,8 @@ Runs as a single Docker container with a SQLite database in `./data`.
 4. `docker compose up -d --build`, sign in, then set your price sheet ID in **Settings** and open **Quick start**.
 
 ## Upgrading
+What changed in each release: [CHANGELOG.md](CHANGELOG.md).
+
 Pull, rebuild and restart. Schema and data changes run automatically on startup (`migrations.py`, no Alembic) and are
 safe to run repeatedly. **Back up `data/portfolio.db` first** – some steps can't be undone:
 - Pre-portfolio databases move into a portfolio called "My Portfolio" with your old settings; the securities and
