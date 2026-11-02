@@ -1,0 +1,77 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+  schedule:
+    - cron: "17 11 * * 1"      # Mondays ~07:17 Toronto: re-audit unchanged pins for newly published CVEs
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lock:
+    name: Lock file matches requirements.in
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version-file: .python-version
+      - name: Regenerate requirements.txt
+        run: sh scripts/lock-deps.sh
+      - name: Fail if it changed
+        id: diff
+        run: |
+          if ! git diff --exit-code -- requirements.txt; then
+            echo "::error::requirements.txt is out of date or not locked. Run scripts/lock-deps.sh and commit the result (or use the requirements-lock artifact)."
+            echo "----- BEGIN GENERATED requirements.txt -----"
+            cat requirements.txt
+            echo "----- END GENERATED requirements.txt -----"
+            exit 1
+          fi
+      - name: Upload the generated lock
+        if: failure() && steps.diff.conclusion == 'failure'
+        uses: actions/upload-artifact@v7
+        with:
+          name: requirements-lock
+          path: requirements.txt
+
+  test:
+    name: Tests (in the Docker image)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
+      - name: Build image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          load: true
+          tags: portfolio-rebalancer:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Run the test suite inside the image
+        # tests/ is kept out of the image by .dockerignore, so mount it.
+        run: |
+          docker run --rm -v "$PWD/tests:/app/tests:ro" -e SECRET_KEY=ci portfolio-rebalancer:ci \
+            sh -c "pip install --quiet --disable-pip-version-check pytest && python -m pytest tests -q -p no:cacheprovider"
+
+  audit:
+    name: Known vulnerabilities (pip-audit)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version-file: .python-version
+      - name: Audit requirements.txt
+        run: |
+          python -m pip install --quiet --disable-pip-version-check "pip-audit==2.10.1"
+          pip-audit --requirement requirements.txt --desc on --strict

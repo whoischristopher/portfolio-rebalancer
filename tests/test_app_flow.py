@@ -101,21 +101,21 @@ def test_rebalance_flow():
     r = c.post(f"/rebalance/execute/{sell[0]}"); assert r.status_code == 302
     with app.app_context():
         h = Holding.query.filter_by(account_id=acc_ids["Non-Reg"], security_id=ids[sell[3]]).first()
-        done = RebalanceTransaction.query.get(sell[0])
+        done = db.session.get(RebalanceTransaction, sell[0])
         exp_acb = bv0 * sell[4] / q0
         assert abs((h.book_value if h else 0) - (bv0 - exp_acb)) < 0.01
         assert abs(done.realized_gain - (sell[5] - exp_acb)) < 0.01
-        assert abs(Account.query.get(acc_ids["Non-Reg"]).cash_balance - sell[5]) < 0.01
+        assert abs(db.session.get(Account, acc_ids["Non-Reg"]).cash_balance - sell[5]) < 0.01
         print(f"\nexecuted {sell[3]} sell: realised gain {done.realized_gain:,.2f}, remaining ACB {h.book_value if h else 0:,.2f}")
     assert plan()["override"] == "allow", "regen after execute must keep the opt-in"
 
     # 6. execute a USD buy in a CAD account → cash converted at spot
     usd_buy = next((t for t in txns() if t[1] == "BUY" and t[3] == "ITOT"), None)
     if usd_buy:
-        with app.app_context(): cash0 = Account.query.get(acc_ids[usd_buy[2]]).cash_balance
+        with app.app_context(): cash0 = db.session.get(Account, acc_ids[usd_buy[2]]).cash_balance
         c.post(f"/rebalance/execute/{usd_buy[0]}")
         with app.app_context():
-            assert abs(cash0 - Account.query.get(acc_ids[usd_buy[2]]).cash_balance - usd_buy[5] * 1.38) < 0.05
+            assert abs(cash0 - db.session.get(Account, acc_ids[usd_buy[2]]).cash_balance - usd_buy[5] * 1.38) < 0.05
         print("USD buy debited in CAD at spot ✓")
 
     # 7. other pages
@@ -140,7 +140,7 @@ def test_rebalance_flow():
     appmod.fetch_prices_from_user_sheet = lambda user: {"TSE:XIC": 41.5, "NYSEARCA:ITOT": 131.0, "TSE:VAB": 23.4}
     c.post("/update_prices")
     with app.app_context():
-        assert Security.query.get(ids["XIC"]).last_price == 41.5
+        assert db.session.get(Security, ids["XIC"]).last_price == 41.5
         assert all(h.price == 41.5 for h in Holding.query.filter_by(security_id=ids["XIC"]))
         assert Holding.query.filter_by(security_id=ids["VAB"]).first().price == 23.4
         assert all(h.price == 131.0 for h in Holding.query.filter_by(security_id=ids["ITOT"]))
@@ -150,7 +150,7 @@ def test_rebalance_flow():
     # --- book value in SECURITY currency (taxable accounts only): a USD buy adds the USD amount to ACB
     def buy_itot(acct):
         with app.app_context():
-            Account.query.get(acc_ids[acct]).cash_balance = 2000.0
+            db.session.get(Account, acc_ids[acct]).cash_balance = 2000.0
             t = RebalanceTransaction(user_id=uid, portfolio_id=pid, account_id=acc_ids[acct], security_id=ids["ITOT"], action="BUY",
                                      quantity=10, price=131.0, amount=1310.0, currency="USD", execution_order=99)
             db.session.add(t); db.session.commit(); tid = t.id
@@ -164,8 +164,10 @@ def test_rebalance_flow():
     buy_itot("RRSP")
     with app.app_context():
         nr_itot = Holding.query.filter_by(account_id=acc_ids["Non-Reg"], security_id=ids["ITOT"]).first()
-        assert abs(nr_itot.book_value - 21310.0) < 0.01, nr_itot.book_value                        # stays USD
-        assert abs(Account.query.get(acc_ids["Non-Reg"]).cash_balance - (2000 - 1310 * 1.38)) < 0.05  # CAD cash at spot
+        # The $4.95 (CAD) per-trade cost set above is the default commission: in USD it's added to ACB.
+        fee_usd = 4.95 / 1.38
+        assert abs(nr_itot.book_value - (21310.0 + fee_usd)) < 0.01, nr_itot.book_value             # stays USD
+        assert abs(db.session.get(Account, acc_ids["Non-Reg"]).cash_balance - (2000 - 1310 * 1.38 - 4.95)) < 0.05  # CAD cash at spot
         rr_itot = Holding.query.filter_by(account_id=acc_ids["RRSP"], security_id=ids["ITOT"]).first()
         assert rr_itot.book_value == 30000.0 and rr_itot.quantity == 310     # registered: ACB not tracked
 
@@ -187,7 +189,7 @@ def test_rebalance_flow():
     # --- illiquid holding far over target → redemption suggested → record → receive
     from models import PendingRedemption
     with app.app_context():
-        Security.query.get(ids["XEF"]).is_illiquid = True
+        db.session.get(Security, ids["XEF"]).is_illiquid = True
         xef = Holding.query.filter_by(account_id=acc_ids["RRSP"], security_id=ids["XEF"]).first()
         xef.quantity, xef.book_value = 6000, 200000.0          # Intl far over its 20% target
         u = db.session.get(Portfolio, pid); u.taxable_sell_mode = "ask"; u.balanced_threshold = 0.5
@@ -218,16 +220,16 @@ def test_rebalance_flow():
                                      "quantity": 6000})
     with app.app_context():
         assert PendingRedemption.query.filter_by(user_id=uid, status="pending").count() == 1
-        cash0 = Account.query.get(acc_ids["RRSP"]).cash_balance
+        cash0 = db.session.get(Account, acc_ids["RRSP"]).cash_balance
 
     c.post(f"/redemptions/{rid}/receive", data={"proceeds": "10000"})
     with app.app_context():
-        r = PendingRedemption.query.get(rid)
+        r = db.session.get(PendingRedemption, rid)
         xef = Holding.query.filter_by(account_id=acc_ids["RRSP"], security_id=ids["XEF"]).first()
         assert r.status == "received" and r.proceeds == 10000
         assert abs(xef.quantity - (6000 - units)) < 1e-6
         assert xef.book_value == 200000.0      # registered account: ACB isn't tracked, so left alone
-        assert abs(Account.query.get(acc_ids["RRSP"]).cash_balance - (cash0 + 10000)) < 0.01
+        assert abs(db.session.get(Account, acc_ids["RRSP"]).cash_balance - (cash0 + 10000)) < 0.01
         rec = RebalanceTransaction.query.filter_by(user_id=uid, executed=True, security_id=ids["XEF"],
                                                    action="SELL").order_by(RebalanceTransaction.id.desc()).first()
         assert rec.amount == 10000 and rec.realized_gain is None                 # registered: no gain
@@ -238,5 +240,5 @@ def test_rebalance_flow():
         rid2 = PendingRedemption.query.filter_by(user_id=uid, status="pending").one().id
     c.post(f"/redemptions/{rid2}/cancel")
     with app.app_context():
-        assert PendingRedemption.query.get(rid2).status == "cancelled"
+        assert db.session.get(PendingRedemption, rid2).status == "cancelled"
     assert c.get("/rebalance").status_code == 200

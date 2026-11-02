@@ -27,6 +27,9 @@ class User(UserMixin, db.Model):
     price_sheet_id = db.Column(db.String(255))  # e.g., "1abc...xyz"
     prices_updated_at = db.Column(db.DateTime)                  # last successful price-sheet read (UTC)
     price_refresh_minutes = db.Column(db.Integer, default=15)   # auto-refresh when older; 0 = never
+    # Column-A tickers at the last successful read, JSON {"tickers": [...], "priced": [...]} –
+    # lets every page show which securities the sheet is missing without re-reading it.
+    price_sheet_snapshot = db.Column(db.Text)
  
     # Relationships
     portfolios = db.relationship('Portfolio', back_populates='user', lazy=True, cascade='all, delete-orphan',
@@ -238,7 +241,19 @@ class RebalanceTransaction(db.Model):
 
     execution_order = db.Column(db.Integer)  # Sequence number
     executed = db.Column(db.Boolean, default=False)
-    executed_at = db.Column(db.DateTime)
+    executed_at = db.Column(db.DateTime)     # when it was recorded in the app (UTC)
+
+    # Filled in when a trade is recorded as executed. quantity/price/amount above then hold
+    # the ACTUAL fill; the plan's numbers are kept here for reference.
+    planned_quantity = db.Column(db.Float, nullable=True)
+    planned_price = db.Column(db.Float, nullable=True)
+    commission = db.Column(db.Float, nullable=True)     # security currency; added to ACB / taken off proceeds
+    trade_date = db.Column(db.Date, nullable=True)      # date the trade was placed (superficial-loss window)
+    # Taxable trades in a security priced in another currency than the base: the
+    # security→base rate on trade_date (Bank of Canada daily rate by default, as the CRA
+    # accepts). Kept per trade so base-currency ACB can be rebuilt later.
+    fx_rate = db.Column(db.Float, nullable=True)
+    fx_rate_source = db.Column(db.String(20), nullable=True)  # 'boc' | 'manual' | 'spot'
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     
     account = db.relationship('Account')

@@ -36,7 +36,9 @@ def priced(monkeypatch):
         sheet["calls"] += 1
         if sheet["error"]:
             raise appmod.PriceSheetError(sheet["error"])
-        return dict(sheet["prices"])
+        from services.prices import SheetPrices
+        p = sheet["prices"]
+        return SheetPrices(p, getattr(p, "tickers", None))     # keep column A's full ticker list
     monkeypatch.setattr(appmod, "fetch_prices_from_user_sheet", fake_fetch)
 
     with app.app_context():
@@ -174,3 +176,36 @@ def test_refresh_interval_setting(priced):
     r = c.post("/settings/update", data={**form, "price_refresh_minutes": "soon"}, follow_redirects=True)
     assert b"whole number of minutes" in r.data
     assert 'name="price_refresh_minutes"' in c.get("/settings").get_data(as_text=True)
+
+
+def test_sheet_gaps_banner_after_a_read(priced):
+    """After a read the app remembers the sheet's tickers; a security with no row gets a
+    banner with rows to paste – including one added after the read, without re-reading."""
+    app, db, c, ids, sheet = priced
+    from models import AssetClass, Security
+    from services.prices import SheetPrices
+    sheet["prices"] = SheetPrices({"TSE:XEQT": 31.0, "TSE:OLD": 5.0}, ["TSE:XEQT", "TSE:OLD", "TSE:BRKN"])
+    c.post("/update_prices")
+    page = c.get("/dashboard").get_data(as_text=True)
+    assert "Not in your price sheet" not in page                  # XEQT has a row; PRIV isn't auto-priced
+
+    with app.app_context():
+        eq = AssetClass.query.filter_by(portfolio_id=ids["p"], name="Equity").first()
+        db.session.add_all([Security(portfolio_id=ids["p"], ticker="ZAG", asset_class_id=eq.id, currency="CAD",
+                                     last_price=14.0),
+                            Security(portfolio_id=ids["p"], ticker="BRKN", asset_class_id=eq.id, currency="CAD",
+                                     last_price=1.0)])
+        db.session.commit()
+    assert sheet["calls"] == 1
+    page = c.get("/securities").get_data(as_text=True)
+    assert "Not in your price sheet:</strong> ZAG" in page
+    assert 'TSE:ZAG\t=GOOGLEFINANCE(INDIRECT(&#34;A&#34;&amp;ROW()),&#34;price&#34;)' in page
+    assert "In the sheet but no price" in page and "TSE:BRKN" in page
+    assert "TSE:OLD" not in page                                  # unused rows: Settings only
+    assert "TSE:OLD" in c.get("/settings").get_data(as_text=True)
+    assert "Not in your price sheet" not in c.get("/accounts").get_data(as_text=True)
+
+
+def test_no_banner_before_the_first_read(priced):
+    app, db, c, ids, sheet = priced
+    assert "Not in your price sheet" not in c.get("/dashboard").get_data(as_text=True)

@@ -37,6 +37,7 @@ from services.fx import get_exchange_rates
 from services.portfolio import calculate_portfolio_allocation
 from services.prices import (
     PriceSheetError, fetch_prices_from_user_sheet, match_prices_across_portfolios, set_security_price,
+    sheet_coverage, sheet_rows_for,
     same_security_elsewhere,
 )
 from rebalancer import generate_plan
@@ -45,7 +46,7 @@ from services.entry import (
     ACCOUNT_TYPES, CURRENCIES, NON_REGISTERED_ACCOUNT_TYPES, REGISTERED_ACCOUNT_TYPES, EntryError, lookup_elsewhere, parse_amount,
     parse_holding_rows, registered_flag, save_holding_rows, find_security, suggest_currency, upsert_holding,
 )
-from services.fx import convert_to_base
+from services.fx import BocRateError, boc_rate, convert_to_base
 
 for handler in logging.root.handlers[:]:
     logging.root.removeHandler(handler)
@@ -66,7 +67,7 @@ login_manager.login_message_category = 'info'
 
 @login_manager.user_loader
 def load_user(user_id):
-    return User.query.get(int(user_id))
+    return db.session.get(User, int(user_id))
 
 init_oauth(app)
 app.register_blueprint(auth_bp, url_prefix='/auth')
@@ -149,7 +150,32 @@ def _inject_portfolios():
                 'has_sheet': bool(current_user.price_sheet_id),
                 'stale': prices_stale(current_user),
                 'minutes': current_user.price_refresh_minutes if current_user.price_refresh_minutes is not None else 15,
+                'gaps': price_sheet_gaps(current_user) if request.endpoint in _SHEET_GAP_PAGES else None,
             }}
+
+
+# Pages that show the "missing from your price sheet" banner (_sheet_gaps.html).
+_SHEET_GAP_PAGES = {'dashboard', 'holdings', 'rebalance', 'securities', 'settings'}
+
+
+def price_sheet_gaps(user):
+    """What the price sheet is missing, from the tickers seen at its last read (no sheet
+    call). None when there's no sheet, it hasn't been read yet, or nothing is missing."""
+    if not user.price_sheet_id or not user.price_sheet_snapshot:
+        return None
+    try:
+        snap = json.loads(user.price_sheet_snapshot)
+    except ValueError:
+        return None
+    securities = (Security.query.join(Portfolio, Security.portfolio_id == Portfolio.id)
+                  .filter(Portfolio.user_id == user.id, Security.auto_update_price.is_(True)).all())
+    cov = sheet_coverage(snap.get('tickers', []), snap.get('priced', []), securities)
+    if not (cov['missing'] or cov['no_price'] or cov['orphans']):
+        return None
+    return {'missing': [s.ticker for s in cov['missing']],
+            'rows': sheet_rows_for(cov['missing']),
+            'no_price': [{'ticker': s.ticker, 'row': row} for s, row in cov['no_price']],
+            'orphans': cov['orphans']}
 
 
 def setup_status(P):
@@ -435,6 +461,7 @@ def refresh_prices(user):
     Securities with auto-update off (private funds, typed prices) are left alone.
     Raises PriceSheetError. Returns a summary dict."""
     prices = fetch_prices_from_user_sheet(user)
+    tickers = getattr(prices, 'tickers', None) or list(prices)
     candidates = (Security.query.join(Portfolio, Security.portfolio_id == Portfolio.id)
                   .filter(Portfolio.user_id == user.id, Security.auto_update_price.is_(True)).all())
     matched, unmatched = match_prices_across_portfolios(prices, candidates)
@@ -442,6 +469,7 @@ def refresh_prices(user):
     for sec_id, price in matched.items():
         set_security_price(by_id[sec_id], price, propagate=False)
     user.prices_updated_at = datetime.utcnow()
+    user.price_sheet_snapshot = json.dumps({'tickers': tickers, 'priced': list(prices)})
     db.session.commit()
     return {'updated': len({by_id[i].ticker for i in matched}),
             'portfolios': len({s.portfolio_id for s in candidates}),
@@ -475,10 +503,7 @@ def update_prices():
         return redirect(_back())
     flash(f"Updated prices for {r['updated']} securities"
           + (f" across {r['portfolios']} portfolios." if r['portfolios'] > 1 else '.'), 'success')
-    if r['missing']:
-        flash('No price in the sheet for: ' + ', '.join(r['missing']), 'warning')
-    if r['unmatched']:
-        flash('Sheet tickers not matching any security: ' + ', '.join(r['unmatched'][:15]), 'warning')
+    # Anything the sheet is missing is shown by _sheet_gaps.html on the page we return to.
     return redirect(_back())
 
 
@@ -954,6 +979,24 @@ def rebalance():
     allocation_by_id, allocation_pct_by_id, total_portfolio = calculate_portfolio_allocation(
         P, exchange_rates
     )
+    # What the "record trade" dialog needs for each trade (see execute_rebalance_transaction)
+    exec_ctx = {}
+    base = P.base_currency or 'CAD'
+    for t in transactions:
+        if t.account is None:
+            continue
+        sec_ccy = t.currency or (t.security.currency if t.security else base)
+        taxable = not t.account.is_registered
+        exec_ctx[t.id] = {
+            'taxable': taxable,
+            # Commission only matters for ACB (taxable) – or for cash, when trades cost something
+            'show_commission': taxable or (P.trade_cost or 0) > 0,
+            'commission': round(convert_to_base(P.trade_cost or 0.0, base, sec_ccy, exchange_rates), 2),
+            'needs_fx': taxable and sec_ccy != base,
+            'spot_rate': round(convert_to_base(1.0, sec_ccy, base, exchange_rates), 6),
+            'sec_ccy': sec_ccy,
+        }
+
     targets = Target.query.filter_by(portfolio_id=P.id).all()
     comparison_data = sorted([
         {
@@ -974,6 +1017,7 @@ def rebalance():
         base_currency=P.base_currency,
         accounts=P.accounts,
         balanced_threshold=P.balanced_threshold,
+        exec_ctx=exec_ctx,
         plan=_plan_summary(),
         pending_redemptions=PendingRedemption.query.filter_by(
             portfolio_id=P.id, status='pending').order_by(PendingRedemption.requested_on).all(),
@@ -1052,6 +1096,17 @@ def _parse_date(value):
         return None
 
 
+def _form_float(name, default):
+    """Number from the request form; blank/missing → default. Accepts 1,234.56."""
+    raw = (request.form.get(name) or '').strip().replace(',', '').replace('$', '')
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        raise ValueError(f'{name.replace("_", " ").capitalize()} must be a number.')
+
+
 @app.route('/redemptions/add', methods=['POST'])
 @login_required
 def add_redemption():
@@ -1116,6 +1171,7 @@ def receive_redemption(redemption_id):
         user_id=current_user.id, portfolio_id=P.id, account_id=account.id, security_id=sec.id, action='SELL',
         quantity=r.quantity, price=proceeds / r.quantity, amount=proceeds, currency=sec.currency,
         executed=True, executed_at=datetime.utcnow(), realized_gain=gain_base, execution_order=0,
+        trade_date=date.today(),
     ))
     r.status, r.received_on, r.proceeds = 'received', datetime.utcnow().date(), proceeds
     db.session.commit()
@@ -1147,6 +1203,9 @@ def execute_rebalance_transaction(transaction_id):
             flash('Please select a security', 'error')
             return redirect(url_for('rebalance'))
         txn.security_id = _get(Security, security_id).id
+    if txn.executed:
+        flash('That trade has already been recorded.', 'error')
+        return redirect(url_for('rebalance'))
     try:
         account = _get(Account, txn.account_id)
         holding = Holding.query.filter_by(
@@ -1157,49 +1216,112 @@ def execute_rebalance_transaction(transaction_id):
         base = P.base_currency or 'CAD'
         acct_ccy = account.currency or base
         sec_ccy = txn.currency or (txn.security.currency if txn.security else acct_ccy)
-        # Trade amount in the account's cash currency, at spot. Book value is kept in
-        # the security's own currency; realised gains are reported in base currency.
-        amount_acct = convert_to_base(txn.amount, sec_ccy, acct_ccy, fx)
+        taxable = not account.is_registered
+
+        # The actual fill. Any field left out means "as planned" (and keeps older
+        # clients/scripts that post nothing working).
+        qty = _form_float('quantity', txn.quantity)
+        price = _form_float('fill_price', txn.price)
+        default_commission = convert_to_base(P.trade_cost or 0.0, base, sec_ccy, fx)
+        commission = _form_float('commission', default_commission)
+        if qty <= 0 or price <= 0:
+            raise ValueError('Quantity and fill price must be more than 0.')
+        if commission < 0:
+            raise ValueError('Commission cannot be negative.')
+        trade_date = date.today()
+        if request.form.get('trade_date'):
+            trade_date = _parse_date(request.form.get('trade_date'))
+            if trade_date is None:
+                raise ValueError('Trade date must be a date (YYYY-MM-DD).')
+            if trade_date > date.today():
+                raise ValueError('Trade date cannot be in the future.')
+
+        # Rate for converting this trade's gain to base currency: the one entered (prefilled
+        # with the Bank of Canada rate for the trade date), else BoC looked up here, else spot.
+        fx_rate, fx_source = None, None
+        if taxable and sec_ccy != base:
+            if request.form.get('fx_rate'):
+                fx_rate = _form_float('fx_rate', 0.0)
+                if fx_rate <= 0:
+                    raise ValueError('Exchange rate must be more than 0.')
+                fx_source = 'boc' if request.form.get('fx_rate_source') == 'boc' else 'manual'
+            else:
+                try:
+                    fx_rate, _ = boc_rate(sec_ccy, base, trade_date)
+                    fx_source = 'boc'
+                except BocRateError as exc:
+                    log.warning('%s – using spot for trade %s', exc, txn.id)
+                    fx_rate, fx_source = convert_to_base(1.0, sec_ccy, base, fx), 'spot'
+                    flash(f'No Bank of Canada rate was available for {trade_date.isoformat()}, so the gain is '
+                          f'converted at today\'s spot rate ({fx_rate:.4f}).', 'warning')
+
+        gross = qty * price                                     # security currency
+        txn.planned_quantity, txn.planned_price = txn.quantity, txn.price
+        txn.quantity, txn.price, txn.amount = qty, price, round(gross, 2)
+        txn.commission, txn.trade_date = commission, trade_date
+        txn.fx_rate, txn.fx_rate_source = fx_rate, fx_source
+
+        # Cash moves in the account's currency, at spot (the broker's own conversion isn't
+        # known here). Book value is kept in the security's currency; realised gains are
+        # reported in base currency at the trade's rate.
         if txn.action == 'SELL':
-            if not holding or holding.quantity < txn.quantity - 1e-9:
+            if not holding or holding.quantity < qty - 1e-9:
                 raise ValueError(
                     f'Insufficient quantity to sell: have '
-                    f'{holding.quantity if holding else 0}, need {txn.quantity}'
+                    f'{holding.quantity if holding else 0:g}, recorded sale of {qty:g}'
                 )
+            net = gross - commission
             # Average-cost ACB: the sold fraction of book value leaves with the shares.
             # ACB is only tracked in taxable accounts.
-            if not account.is_registered and holding.book_value is not None and holding.quantity > 0:
-                acb_sold = holding.book_value * (txn.quantity / holding.quantity)
+            txn.realized_gain = None
+            if taxable and holding.book_value is not None and holding.quantity > 0:
+                acb_sold = holding.book_value * (qty / holding.quantity)
                 holding.book_value -= acb_sold
-                txn.realized_gain = convert_to_base(txn.amount - acb_sold, sec_ccy, base, fx)
-            holding.quantity -= txn.quantity
+                gain_native = net - acb_sold
+                txn.realized_gain = gain_native * fx_rate if fx_rate else convert_to_base(gain_native, sec_ccy, base, fx)
+            holding.quantity -= qty
             if holding.quantity <= 1e-9:
                 db.session.delete(holding)
-            account.cash_balance = (account.cash_balance or 0) + amount_acct
+            account.cash_balance = (account.cash_balance or 0) + convert_to_base(net, sec_ccy, acct_ccy, fx)
         else:  # BUY
-            if (account.cash_balance or 0) < amount_acct - 0.01:
-                raise ValueError(
-                    f'Insufficient cash: have {account.cash_balance:.2f} {acct_ccy}, '
-                    f'need {amount_acct:.2f} {acct_ccy}'
-                )
+            cost = gross + commission
+            cost_acct = convert_to_base(cost, sec_ccy, acct_ccy, fx)
+            cash = account.cash_balance or 0
+            short = cost_acct - cash
+            if short > 0.01:
+                # The broker filled it, so the app's cash figure was a little off (fill price
+                # or FX slippage on the last buy). Small gaps are absorbed; big ones mean the
+                # cash balance needs fixing first.
+                if short > max(1.0, 0.005 * cost_acct):
+                    raise ValueError(
+                        f'This buy costs {cost_acct:,.2f} {acct_ccy} but {account.name} only has '
+                        f'{cash:,.2f} {acct_ccy} in cash here. Update the cash balance on the '
+                        f'Holdings page to match your brokerage, then record the trade.'
+                    )
+                flash(f'The buy cost {short:,.2f} {acct_ccy} more than the cash recorded for '
+                      f'{account.name}; its cash is now set to 0.', 'warning')
             if holding:
-                holding.quantity += txn.quantity
-                if holding.book_value is not None and not account.is_registered:
-                    holding.book_value += txn.amount
+                holding.quantity += qty
+                if holding.book_value is not None and taxable:
+                    holding.book_value += cost
             else:
                 db.session.add(Holding(
                     account_id=txn.account_id,
                     security_id=txn.security_id,
-                    quantity=txn.quantity,
-                    price=txn.price,
-                    book_value=None if account.is_registered else txn.amount,
-                    book_value_as_of=None if account.is_registered else date.today(),
+                    quantity=qty,
+                    price=(txn.security.last_price if txn.security else None) or price,
+                    book_value=cost if taxable else None,
+                    book_value_as_of=trade_date if taxable else None,
                 ))
-            account.cash_balance = (account.cash_balance or 0) - amount_acct
+            account.cash_balance = max(0.0, cash - cost_acct) if short > 0.01 else cash - cost_acct
         txn.executed = True
         txn.executed_at = datetime.utcnow()
         db.session.commit()
-        flash(f'Executed: {txn.action} {txn.quantity:.2f} of {txn.security.ticker}', 'success')
+        deviation = ''
+        if abs(qty - txn.planned_quantity) > 1e-9 or abs(price - txn.planned_price) > 1e-9:
+            deviation = f' (planned {txn.planned_quantity:g} @ {fmt_money(txn.planned_price, sec_ccy, base)})'
+        flash(f'Recorded: {txn.action} {qty:g} {txn.security.ticker} @ {fmt_money(price, sec_ccy, base)}'
+              f'{deviation}. Remaining trades re-planned from the actual cash.', 'success')
 
         # Regen is best-effort — don't let it mask the successful trade
         try:
@@ -1262,8 +1384,10 @@ def update_settings():
     P.taxable_sell_mode = mode if mode in ('never', 'ask', 'allow') else 'ask'
     P.sl_link_portfolio_id = link
     price_sheet_id = request.form.get('price_sheet_id', '').strip()
-    if price_sheet_id:
+    if price_sheet_id and price_sheet_id != current_user.price_sheet_id:
         current_user.price_sheet_id = price_sheet_id
+        current_user.price_sheet_snapshot = None     # the old sheet's tickers say nothing about the new one
+        current_user.prices_updated_at = None        # read the new sheet on the next page
     raw = (request.form.get('price_refresh_minutes') or '').strip()
     if raw:
         try:
@@ -1458,6 +1582,24 @@ def api_get_holdings():
         for account in accounts
         for h in account.holdings
     ])
+
+
+@app.route('/api/fx/boc', methods=['GET'])
+@login_required
+def api_boc_rate():
+    """Bank of Canada rate currency→portfolio base currency for a date (prefills the
+    exchange-rate field when a taxable foreign-currency trade is recorded)."""
+    ccy = (request.args.get('currency') or '').upper()
+    on = _parse_date(request.args.get('date')) or date.today()
+    base = current_portfolio().base_currency or 'CAD'
+    if ccy not in CURRENCIES or on > date.today():
+        return jsonify({'error': 'Unsupported currency or date'}), 400
+    try:
+        rate, observed = boc_rate(ccy, base, on)
+    except BocRateError as exc:
+        return jsonify({'error': str(exc)}), 502
+    return jsonify({'rate': round(rate, 6), 'observed_on': observed.isoformat(), 'from': ccy, 'to': base,
+                    'source': 'boc'})
 
 
 @app.route('/api/portfolio/summary', methods=['GET'])
