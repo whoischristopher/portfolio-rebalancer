@@ -164,8 +164,10 @@ def test_rebalance_flow():
     buy_itot("RRSP")
     with app.app_context():
         nr_itot = Holding.query.filter_by(account_id=acc_ids["Non-Reg"], security_id=ids["ITOT"]).first()
-        assert abs(nr_itot.book_value - 21310.0) < 0.01, nr_itot.book_value                        # stays USD
-        assert abs(Account.query.get(acc_ids["Non-Reg"]).cash_balance - (2000 - 1310 * 1.38)) < 0.05  # CAD cash at spot
+        # The $4.95 (CAD) per-trade cost set above is the default commission: in USD it's added to ACB.
+        fee_usd = 4.95 / 1.38
+        assert abs(nr_itot.book_value - (21310.0 + fee_usd)) < 0.01, nr_itot.book_value             # stays USD
+        assert abs(Account.query.get(acc_ids["Non-Reg"]).cash_balance - (2000 - 1310 * 1.38 - 4.95)) < 0.05  # CAD cash at spot
         rr_itot = Holding.query.filter_by(account_id=acc_ids["RRSP"], security_id=ids["ITOT"]).first()
         assert rr_itot.book_value == 30000.0 and rr_itot.quantity == 310     # registered: ACB not tracked
 

@@ -14,6 +14,7 @@ superficial losses in check. Built for Canadian investors (CAD base currency, US
 - [Securities](#securities)
 - [Prices and exchange rates](#prices-and-exchange-rates)
 - [How the rebalancer works](#how-the-rebalancer-works)
+- [Recording executed trades](#recording-executed-trades)
 - [Multiple portfolios](#multiple-portfolios)
 - [Not (yet) handled](#not-yet-handled)
 - [Installation](#installation)
@@ -112,6 +113,24 @@ Always respected:
   recorded loss sale, no loss sale within 30 days of a recorded buy. Only trades executed in this app are known.
   Optionally also checked against a linked portfolio (Settings, default off)
 - Optional fractional final buy per account to use up leftover cash, without pushing a class past its band
+
+## Recording executed trades
+Place the plan's trades at your brokerage, then click **Executed…** on each one and enter what was actually filled.
+The fields come pre-filled with the plan's numbers, so a trade that went exactly as planned is one click.
+- **Fill price and quantity:** these, not the plan's numbers, update holdings, cash and book value. The plan's
+  numbers are kept on the trade for reference. A price more than 5% from the planned one asks you to confirm.
+- **Commission** (taxable accounts, or any account when Settings has a per-trade cost): in the security's currency,
+  pre-filled from the per-trade cost. It's added to book value on a buy and taken off the proceeds on a sale.
+- **Trade date** (every account, default today): the 30-day superficial-loss window counts from this date. It matters
+  in registered accounts too: buying in an RRSP or TFSA within 30 days of a taxable loss sale makes the loss superficial.
+- **Exchange rate** (taxable trades in a security priced in another currency than the base): pre-filled with the Bank
+  of Canada daily rate for the trade date (the last one published before it on weekends and holidays), which the CRA
+  accepts. You can enter your own instead. It's stored on the trade and used for the realised gain; book value stays
+  in the security's currency. If no rate can be found, the spot rate is used and you're told.
+- Cash still moves at the spot rate, since the brokerage's own conversion isn't known here.
+- After each trade, the rest of the plan is re-planned from the actual cash and holdings, so the last buy in each
+  account is re-sized for you. If a buy cost slightly more than the cash recorded here (up to $1 or 0.5%), the cash is
+  set to 0; a bigger gap means the cash balance is wrong, so you're asked to fix it on the Holdings page first.
 
 ## Multiple portfolios
 - Switch the active portfolio from the selector at the top of the sidebar; manage them on the Portfolios page.

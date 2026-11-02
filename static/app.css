@@ -382,3 +382,8 @@ dialog.modal h2 { margin-bottom: 1rem; }
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; }
 }
+
+/* Record-trade dialog (rebalance page) */
+dialog.modal [data-exec-form] { margin-top: 1rem; }
+dialog.modal [data-exec-form] label { display: flex; flex-direction: column; gap: 0.3rem; }
+dialog.modal [data-exec-form] label input { width: 100%; }

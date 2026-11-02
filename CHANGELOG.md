@@ -6,6 +6,24 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+### Added
+- **Record the actual fill** when a trade is executed: fill price, quantity, commission and trade date, pre-filled
+  with the plan's numbers. Holdings, cash, book value and realised gain use the actual fill; the planned quantity and
+  price are kept on the trade. A fill price more than 5% from plan asks for confirmation.
+- **Exchange rate on the trade date** for taxable trades in a foreign-currency security, pre-filled with the Bank of
+  Canada daily rate (`/api/fx/boc`), stored on the trade and used to convert its realised gain.
+- Small cash shortfalls on a buy (up to $1 or 0.5%, e.g. slippage on the last buy) set the account's cash to 0 instead
+  of blocking the trade.
+
+### Changed
+- The superficial-loss window counts from each trade's trade date rather than when it was recorded in the app.
+  Existing trades get their recorded date as their trade date (automatic migration).
+- With a per-trade cost set in Settings, recording a trade without entering a commission now uses that cost
+  (added to book value and taken from cash).
+
+### Fixed
+- A trade could be recorded twice by re-submitting the form.
+
 ## [1.0.0] - 2026-11-02
 
 First production release. The rebalancing engine, data model and most of the UI have been rewritten since the
