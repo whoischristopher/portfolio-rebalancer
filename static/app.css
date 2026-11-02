@@ -233,6 +233,10 @@ select[multiple] { padding: 0.25rem; }
 .empty { color: var(--muted); padding: 1.5rem 0 0.5rem; }
 .hidden { display: none !important; }
 
+/* ---------- Price status ---------- */
+.price-status { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; margin-top: 0.35rem; }
+.page-actions .price-status { margin-top: 0; }
+
 /* ---------- Stats ---------- */
 .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 1.25rem 2rem; }
 .stat-label { color: var(--muted); font-size: 0.88rem; }

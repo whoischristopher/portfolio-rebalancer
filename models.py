@@ -25,6 +25,8 @@ class User(UserMixin, db.Model):
     
     # Optional: store the user's price sheet ID
     price_sheet_id = db.Column(db.String(255))  # e.g., "1abc...xyz"
+    prices_updated_at = db.Column(db.DateTime)                  # last successful price-sheet read (UTC)
+    price_refresh_minutes = db.Column(db.Integer, default=15)   # auto-refresh when older; 0 = never
  
     # Relationships
     portfolios = db.relationship('Portfolio', back_populates='user', lazy=True, cascade='all, delete-orphan',

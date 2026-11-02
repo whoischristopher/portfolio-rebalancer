@@ -43,6 +43,14 @@ Always respected:
   superficial-loss checks are skipped for them – the provider's underlying stock trades are the real dispositions
 - Optional fractional final buy per account to use up leftover cash, without pushing a class past its band
 
+Prices:
+- Dashboard, Holdings and Rebalance show when prices were last read from your price sheet, with an Update prices button.
+- When prices are older than the refresh interval (Settings, per login, default 15 minutes; 0 = off), those pages
+  update them in the background and reload; generating a plan updates them first. A failed read leaves the old
+  prices in place and shows "couldn't update" (hover for the reason). Securities with auto-update off are never touched.
+- Each plan records when it was generated and which prices it used; the Rebalance page warns when prices have been
+  updated since, so share counts may be off.
+
 Getting data in:
 - Quick start (sidebar, and the dashboard checklist until setup is complete) walks through accounts → holdings & cash,
   one account at a time → target mix → a first plan. Each step saves as you go; it can be re-run any time to add more.
