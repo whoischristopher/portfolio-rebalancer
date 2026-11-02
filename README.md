@@ -78,6 +78,11 @@ Securities and Targets can be edited on their own pages.
 - **Price sheet:** a Google Sheet with tickers in column A (e.g. `TSE:XEC`, `NYSEARCA:ITOT`; the exchange prefix is
   ignored when matching) and `=GOOGLEFINANCE(A2,"price")` in column B. Put its ID in Settings. One sheet prices every
   portfolio of your login – list each ticker once. (Google Sheets replaced yfinance, which kept being rate-limited.)
+- **Keeping the sheet in step:** the app only *reads* the sheet, so it can't add rows itself. After each read it
+  remembers the sheet's tickers, and Dashboard, Holdings, Rebalance, Securities and Settings show a banner when an
+  auto-priced security has no row (with a **Copy rows for the sheet** button – paste into the first empty cell of
+  column A; the exchange prefix is a guess, `TSE:` for CAD and none for USD) or when its row gives no price (usually
+  `#N/A` from a wrong prefix). Rows no security uses are listed on Settings.
 - **Freshness:** Dashboard, Holdings and Rebalance show when prices were last read, with an **Update prices** button.
   When they're older than the refresh interval (Settings, default 15 minutes; 0 = off) those pages update them in the
   background and reload; generating a plan updates them first. A failed read keeps the old prices and shows a small
