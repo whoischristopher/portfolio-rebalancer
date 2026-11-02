@@ -20,6 +20,15 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
   of blocking the trade.
 
 ### Changed
+- **Dependencies locked and kept current.** `requirements.in` (direct dependencies, version ranges) and a hashed
+  lock file in `requirements.txt`, regenerated with `scripts/lock-deps.sh`. Dependabot opens weekly update PRs against
+  `develop`, and CI checks the lock, runs the tests inside the Docker image and runs `pip-audit`.
+- Library upgrades: Flask 3.1.3, Werkzeug 3.1.9, gunicorn 26.2.0 (request-smuggling fixes), Authlib 1.9.2,
+  SQLAlchemy 2.1.6, Requests 2.34.2 (CVE-2024-35195, CVE-2024-47081), NumPy 2.5.4, SciPy 1.18.1,
+  google-api-python-client 2.201.0, google-auth 2.62.0.
+- Docker image moves to **Python 3.13** (`python:3.13-slim`); current NumPy and SciPy need 3.12 or later.
+- A `.dockerignore` keeps `.env`, the database, logs, `.git` and tests out of the image.
+- Login lookup uses `db.session.get()` instead of the legacy `Query.get()`.
 - The superficial-loss window counts from each trade's trade date rather than when it was recorded in the app.
   Existing trades get their recorded date as their trade date (automatic migration).
 - With a per-trade cost set in Settings, recording a trade without entering a commission now uses that cost
