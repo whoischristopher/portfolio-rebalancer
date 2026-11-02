@@ -27,6 +27,9 @@ class User(UserMixin, db.Model):
     price_sheet_id = db.Column(db.String(255))  # e.g., "1abc...xyz"
     prices_updated_at = db.Column(db.DateTime)                  # last successful price-sheet read (UTC)
     price_refresh_minutes = db.Column(db.Integer, default=15)   # auto-refresh when older; 0 = never
+    # Column-A tickers at the last successful read, JSON {"tickers": [...], "priced": [...]} –
+    # lets every page show which securities the sheet is missing without re-reading it.
+    price_sheet_snapshot = db.Column(db.Text)
  
     # Relationships
     portfolios = db.relationship('Portfolio', back_populates='user', lazy=True, cascade='all, delete-orphan',

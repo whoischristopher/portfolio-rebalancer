@@ -1,0 +1,40 @@
+{# What the price sheet is missing, from the tickers seen at its last read (price_sheet_gaps()).
+   The app can only read the sheet, so it hands over rows to paste instead of adding them. #}
+{% set gaps = price_status.gaps if price_status else None %}
+{% if gaps and (gaps.missing or gaps.no_price) %}
+<div class="flash-messages sheet-gaps">
+    <div class="alert alert-warning">
+        {% if gaps.missing %}
+        <p class="sheet-gaps-line">
+            <strong>Not in your price sheet:</strong> {{ gaps.missing|join(', ') }}
+            – {{ 'its price' if gaps.missing|length == 1 else 'their prices' }} won't update.
+            <button type="button" class="btn btn-secondary btn-sm" data-copy-target="sheet-gap-rows">Copy rows for the sheet</button>
+        </p>
+        <details class="sheet-gaps-details">
+            <summary class="small">What gets copied</summary>
+            <textarea id="sheet-gap-rows" class="sheet-gap-rows" rows="{{ gaps.missing|length }}" readonly
+                      spellcheck="false">{{ gaps.rows }}</textarea>
+            <p class="small">Click the first empty cell in column A of the sheet and paste – each row fills the ticker
+                (column A) and its <code>GOOGLEFINANCE</code> formula (column B). The exchange prefix is a guess
+                (<code>TSE:</code> for Canadian dollar tickers, none for US); if a price shows <code>#N/A</code>, fix
+                the prefix in column A. Then press <em>Update prices</em>.</p>
+        </details>
+        {% endif %}
+        {% if gaps.no_price %}
+        <p class="sheet-gaps-line">
+            <strong>In the sheet but no price:</strong>
+            {% for g in gaps.no_price %}{{ g.ticker }}{% if g.row != g.ticker %} (row <code>{{ g.row }}</code>){% endif %}{{ ', ' if not loop.last }}{% endfor %}
+            – the <code>GOOGLEFINANCE</code> lookup is failing (usually <code>#N/A</code> from a wrong exchange prefix).
+        </p>
+        {% endif %}
+    </div>
+</div>
+{% endif %}
+{% if gaps and gaps.orphans and request.endpoint == 'settings' %}
+<div class="flash-messages sheet-gaps">
+    <div class="alert alert-info small">
+        Rows in your price sheet that no security uses: {{ gaps.orphans|join(', ') }}. Delete them from the sheet
+        if you no longer need them.
+    </div>
+</div>
+{% endif %}

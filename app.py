@@ -37,6 +37,7 @@ from services.fx import get_exchange_rates
 from services.portfolio import calculate_portfolio_allocation
 from services.prices import (
     PriceSheetError, fetch_prices_from_user_sheet, match_prices_across_portfolios, set_security_price,
+    sheet_coverage, sheet_rows_for,
     same_security_elsewhere,
 )
 from rebalancer import generate_plan
@@ -149,7 +150,32 @@ def _inject_portfolios():
                 'has_sheet': bool(current_user.price_sheet_id),
                 'stale': prices_stale(current_user),
                 'minutes': current_user.price_refresh_minutes if current_user.price_refresh_minutes is not None else 15,
+                'gaps': price_sheet_gaps(current_user) if request.endpoint in _SHEET_GAP_PAGES else None,
             }}
+
+
+# Pages that show the "missing from your price sheet" banner (_sheet_gaps.html).
+_SHEET_GAP_PAGES = {'dashboard', 'holdings', 'rebalance', 'securities', 'settings'}
+
+
+def price_sheet_gaps(user):
+    """What the price sheet is missing, from the tickers seen at its last read (no sheet
+    call). None when there's no sheet, it hasn't been read yet, or nothing is missing."""
+    if not user.price_sheet_id or not user.price_sheet_snapshot:
+        return None
+    try:
+        snap = json.loads(user.price_sheet_snapshot)
+    except ValueError:
+        return None
+    securities = (Security.query.join(Portfolio, Security.portfolio_id == Portfolio.id)
+                  .filter(Portfolio.user_id == user.id, Security.auto_update_price.is_(True)).all())
+    cov = sheet_coverage(snap.get('tickers', []), snap.get('priced', []), securities)
+    if not (cov['missing'] or cov['no_price'] or cov['orphans']):
+        return None
+    return {'missing': [s.ticker for s in cov['missing']],
+            'rows': sheet_rows_for(cov['missing']),
+            'no_price': [{'ticker': s.ticker, 'row': row} for s, row in cov['no_price']],
+            'orphans': cov['orphans']}
 
 
 def setup_status(P):
@@ -435,6 +461,7 @@ def refresh_prices(user):
     Securities with auto-update off (private funds, typed prices) are left alone.
     Raises PriceSheetError. Returns a summary dict."""
     prices = fetch_prices_from_user_sheet(user)
+    tickers = getattr(prices, 'tickers', None) or list(prices)
     candidates = (Security.query.join(Portfolio, Security.portfolio_id == Portfolio.id)
                   .filter(Portfolio.user_id == user.id, Security.auto_update_price.is_(True)).all())
     matched, unmatched = match_prices_across_portfolios(prices, candidates)
@@ -442,6 +469,7 @@ def refresh_prices(user):
     for sec_id, price in matched.items():
         set_security_price(by_id[sec_id], price, propagate=False)
     user.prices_updated_at = datetime.utcnow()
+    user.price_sheet_snapshot = json.dumps({'tickers': tickers, 'priced': list(prices)})
     db.session.commit()
     return {'updated': len({by_id[i].ticker for i in matched}),
             'portfolios': len({s.portfolio_id for s in candidates}),
@@ -475,10 +503,7 @@ def update_prices():
         return redirect(_back())
     flash(f"Updated prices for {r['updated']} securities"
           + (f" across {r['portfolios']} portfolios." if r['portfolios'] > 1 else '.'), 'success')
-    if r['missing']:
-        flash('No price in the sheet for: ' + ', '.join(r['missing']), 'warning')
-    if r['unmatched']:
-        flash('Sheet tickers not matching any security: ' + ', '.join(r['unmatched'][:15]), 'warning')
+    # Anything the sheet is missing is shown by _sheet_gaps.html on the page we return to.
     return redirect(_back())
 
 
@@ -1359,8 +1384,10 @@ def update_settings():
     P.taxable_sell_mode = mode if mode in ('never', 'ask', 'allow') else 'ask'
     P.sl_link_portfolio_id = link
     price_sheet_id = request.form.get('price_sheet_id', '').strip()
-    if price_sheet_id:
+    if price_sheet_id and price_sheet_id != current_user.price_sheet_id:
         current_user.price_sheet_id = price_sheet_id
+        current_user.price_sheet_snapshot = None     # the old sheet's tickers say nothing about the new one
+        current_user.prices_updated_at = None        # read the new sheet on the next page
     raw = (request.form.get('price_refresh_minutes') or '').strip()
     if raw:
         try:

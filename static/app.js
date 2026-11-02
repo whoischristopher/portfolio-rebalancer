@@ -232,6 +232,32 @@
     }
   }
 
+  /* ---------- Copy buttons (e.g. rows for the price sheet) ---------- */
+  // navigator.clipboard only exists on https/localhost; a self-hosted app on plain http
+  // falls back to selecting the text and execCommand('copy').
+  document.addEventListener('click', async (e) => {
+    const btn = e.target.closest('[data-copy-target]');
+    if (!btn) return;
+    const src = document.getElementById(btn.dataset.copyTarget);
+    if (!src) return;
+    const text = src.value !== undefined ? src.value : src.textContent;
+    let ok = false;
+    try {
+      if (navigator.clipboard && window.isSecureContext) { await navigator.clipboard.writeText(text); ok = true; }
+    } catch (_) { ok = false; }
+    if (!ok) {
+      const details = src.closest('details');
+      if (details) details.open = true;
+      src.focus(); src.select();
+      try { ok = document.execCommand('copy'); } catch (_) { ok = false; }
+    }
+    const label = btn.dataset.label || btn.textContent;
+    btn.dataset.label = label;
+    btn.textContent = ok ? 'Copied \u2713' : 'Selected \u2013 press Ctrl/\u2318+C';
+    clearTimeout(btn._copyTimer);
+    btn._copyTimer = setTimeout(() => { btn.textContent = label; }, 2500);
+  });
+
   /* ---------- Record an executed trade (rebalance page) ---------- */
   function localISODate() {
     const d = new Date();

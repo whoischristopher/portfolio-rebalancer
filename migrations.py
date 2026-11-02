@@ -35,6 +35,7 @@ ADDED_COLUMNS = [
     ('holdings', 'book_value_as_of', 'DATE'),
     ('users', 'prices_updated_at', 'DATETIME'),
     ('users', 'price_refresh_minutes', 'INTEGER DEFAULT 15'),
+    ('users', 'price_sheet_snapshot', 'TEXT'),
     # Actual fills recorded when a trade is executed
     ('rebalance_transactions', 'planned_quantity', 'FLOAT'),
     ('rebalance_transactions', 'planned_price', 'FLOAT'),

@@ -114,6 +114,16 @@ small, .small { font-size: 0.85rem; }
 /* ---------- Flash messages ---------- */
 .flash-messages { max-width: 1180px; padding: 1.5rem 2.5rem 0; display: grid; gap: 0.5rem; }
 .flash-messages + .container { padding-top: 1.25rem; }
+.flash-messages + .sheet-gaps { padding-top: 0.5rem; }
+.sheet-gaps .alert p { margin: 0; }
+.sheet-gaps-line { display: flex; flex-wrap: wrap; align-items: center; gap: 0.25rem 0.5rem; }
+.sheet-gaps .alert .sheet-gaps-line + .sheet-gaps-line,
+.sheet-gaps .alert .sheet-gaps-details + .sheet-gaps-line { margin-top: 0.6rem; }
+.sheet-gaps-details { margin-top: 0.4rem; }
+.sheet-gaps-details summary { cursor: pointer; }
+.sheet-gap-rows { display: block; width: 100%; margin: 0.4rem 0; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.82rem; tab-size: 4; white-space: pre; resize: vertical; }
+.sheet-gaps .alert .sheet-gaps-details p.small { margin-top: 0.25rem; }
 .alert {
   padding: 0.7rem 1rem; border-radius: var(--radius-sm);
   border: 1px solid transparent; font-size: 0.95rem;

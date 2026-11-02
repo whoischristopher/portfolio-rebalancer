@@ -26,6 +26,20 @@ class PriceSheetError(Exception):
     """Raised with a user-readable reason when the price sheet can't be read."""
 
 
+class SheetPrices(dict):
+    """ticker → price, as read from the sheet, plus .tickers: every ticker in column A,
+    including rows with no usable price (#N/A, Loading…) – so the app can tell a ticker
+    that's missing from the sheet apart from one whose GOOGLEFINANCE lookup fails."""
+
+    def __init__(self, prices=None, tickers=None):
+        super().__init__(prices or {})
+        self.tickers = list(tickers) if tickers is not None else list(self)
+
+
+# Column-A values treated as a header row rather than a ticker.
+_HEADER_WORDS = {"TICKER", "TICKERS", "SYMBOL", "SYMBOLS", "SECURITY"}
+
+
 def normalize_ticker(ticker: str) -> str:
     """'TSE:XEC' / 'XEC.TO' / ' xec ' → 'XEC'.  'NYSEARCA:ITOT' → 'ITOT'."""
     t = (ticker or "").strip().upper()
@@ -45,7 +59,7 @@ def _to_float(value):
     return float(cleaned) if cleaned not in ("", "-", ".") else None
 
 
-def fetch_prices_from_user_sheet(user) -> dict:
+def fetch_prices_from_user_sheet(user) -> SheetPrices:
     """Read ticker→price from the user's Google Sheet (column A ticker, column B price).
 
     Reads the first sheet tab, UNFORMATTED values (so "$45.12" or "1,234.50"
@@ -82,20 +96,29 @@ def fetch_prices_from_user_sheet(user) -> dict:
         log.exception("Price sheet read failed for user %s", user.id)
         raise PriceSheetError(_explain_google_error(exc)) from exc
 
-    prices = {}
-    for row in result.get("values", []):
-        if len(row) < 2 or not str(row[0]).strip():
-            continue
-        try:
-            price = _to_float(row[1])
-        except ValueError:
-            price = None            # "#N/A", "Loading..." etc.
-        if price and price > 0:
-            prices[str(row[0]).strip()] = price
+    prices = parse_sheet_rows(result.get("values", []))
     if not prices:
         raise PriceSheetError("The sheet was read but no usable prices were found in columns A–B "
                               "(check for #N/A or text in column B).")
     return prices
+
+
+def parse_sheet_rows(rows) -> SheetPrices:
+    """Turn the sheet's A:B values into SheetPrices. Blank and header rows are skipped."""
+    prices, tickers = {}, []
+    for row in rows:
+        ticker = str(row[0]).strip() if row else ""
+        if not ticker or ticker.upper() in _HEADER_WORDS:
+            continue
+        if ticker not in tickers:
+            tickers.append(ticker)
+        try:
+            price = _to_float(row[1]) if len(row) > 1 else None
+        except ValueError:
+            price = None            # "#N/A", "Loading..." etc.
+        if price and price > 0:
+            prices[ticker] = price
+    return SheetPrices(prices, tickers)
 
 
 def _explain_google_error(exc) -> str:
@@ -180,3 +203,68 @@ def set_security_price(security, price: float, propagate: bool = True):
         sec.last_price = float(price)
         Holding.query.filter_by(security_id=sec.id).update(
             {"price": float(price), "updated_at": datetime.utcnow()}, synchronize_session="fetch")
+
+
+# --------------------------------------------------------------------------- #
+# Keeping the sheet in step with the securities list.
+# The app can only READ the sheet, so it can't add rows itself; instead it compares the
+# sheet's tickers (remembered from the last read) with the securities and hands the user
+# ready-to-paste rows for anything missing.
+
+# Yahoo-style suffix → GOOGLEFINANCE exchange prefix.
+_GF_PREFIX_FOR_SUFFIX = {".TO": "TSE", ".TSX": "TSE", ".V": "CVE", ".NE": "NEO", ".CN": "CNSX"}
+
+# Formula for column B that prices whatever ticker sits in column A of the same row,
+# so the rows can be pasted anywhere in the sheet.
+SHEET_PRICE_FORMULA = '=GOOGLEFINANCE(INDIRECT("A"&ROW()),"price")'
+
+
+def google_finance_symbol(ticker: str, currency: str = "CAD") -> str:
+    """Best guess at the GOOGLEFINANCE symbol for a security.
+
+    'TSE:XEC' stays as is; 'XEC.TO' → 'TSE:XEC'; a CAD ticker with no exchange → 'TSE:…'
+    (including TSX USD listings such as 'DLR.U'); USD and other tickers are left bare,
+    which GOOGLEFINANCE resolves to the main US listing. Only a guess – the user should
+    check any row that comes back #N/A."""
+    t = (ticker or "").strip().upper()
+    if not t or ":" in t:
+        return t
+    for sfx, prefix in _GF_PREFIX_FOR_SUFFIX.items():
+        if t.endswith(sfx):
+            return f"{prefix}:{t[: -len(sfx)]}"
+    if (currency or "CAD").upper() == "CAD" or t.endswith(".U"):
+        return f"TSE:{t}"
+    return t
+
+
+def sheet_coverage(sheet_tickers, priced_tickers, securities) -> dict:
+    """Compare the price sheet with the auto-priced securities of every portfolio.
+
+    sheet_tickers:  every ticker in column A at the last read
+    priced_tickers: those of them that had a usable price
+    securities:     Security objects with auto_update_price on (any portfolio)
+
+    Returns {'missing': [Security…]  – no row in the sheet (one per ticker+currency),
+             'no_price': [(Security, sheet ticker)…] – a row, but no price from it,
+             'orphans': [sheet ticker…] – rows no security uses}."""
+    rows = {t: t for t in sheet_tickers}
+    matched, orphans = match_prices_across_portfolios(rows, securities)
+    priced = set(priced_tickers)
+    missing, no_price, seen = [], [], set()
+    for s in sorted(securities, key=lambda s: (s.ticker or "").upper()):
+        key = (normalize_ticker(s.ticker), (s.currency or "CAD").upper())
+        if key in seen:              # same listing in another portfolio – one row covers both
+            continue
+        seen.add(key)
+        row = matched.get(s.id)
+        if row is None:
+            missing.append(s)
+        elif row not in priced:
+            no_price.append((s, row))
+    return {"missing": missing, "no_price": no_price, "orphans": orphans}
+
+
+def sheet_rows_for(securities) -> str:
+    """Tab-separated rows (ticker, formula) – pasted into column A of the sheet they fill A and B."""
+    return "\n".join(f"{google_finance_symbol(s.ticker, s.currency)}\t{SHEET_PRICE_FORMULA}"
+                     for s in securities)
