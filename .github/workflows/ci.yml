@@ -27,11 +27,21 @@ jobs:
       - name: Regenerate requirements.txt
         run: sh scripts/lock-deps.sh
       - name: Fail if it changed
+        id: diff
         run: |
           if ! git diff --exit-code -- requirements.txt; then
-            echo "::error::requirements.txt is out of date or not locked. Run scripts/lock-deps.sh and commit the result."
+            echo "::error::requirements.txt is out of date or not locked. Run scripts/lock-deps.sh and commit the result (or use the requirements-lock artifact)."
+            echo "----- BEGIN GENERATED requirements.txt -----"
+            cat requirements.txt
+            echo "----- END GENERATED requirements.txt -----"
             exit 1
           fi
+      - name: Upload the generated lock
+        if: failure() && steps.diff.conclusion == 'failure'
+        uses: actions/upload-artifact@v7
+        with:
+          name: requirements-lock
+          path: requirements.txt
 
   test:
     name: Tests (in the Docker image)

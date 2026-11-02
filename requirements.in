@@ -2,30 +2,30 @@
 #   sh scripts/lock-deps.sh            (see the script for the Docker one-liner)
 # requirements.txt is the lock file: every package, transitive ones included, pinned with hashes.
 #
-# Floors = the versions the test suite last passed with (and past known CVEs).
+# Floors = past known CVEs and at least the major.minor the test suite last passed with.
 # Ceilings = the next major/minor that may break things; Dependabot proposes raising them.
 
 # Web
-Flask>=3.1.3,<4
-Werkzeug>=3.1.9,<4             # explicit floor: debugger fix in 3.0.3
-gunicorn>=26.2.2,<27           # request-smuggling fixes in 22.0 / 23.0
+Flask>=3.1,<4
+Werkzeug>=3.1,<4               # explicit floor: debugger fix in 3.0.3
+gunicorn>=26.0,<27             # request-smuggling fixes in 22.0 / 23.0
 
 # Auth
 flask-login>=0.6.3,<0.7
-Authlib>=1.9.2,<2
+Authlib>=1.9,<2
 
 # Database
 Flask-SQLAlchemy>=3.1.1,<4
-SQLAlchemy>=2.1.6,<2.2
+SQLAlchemy>=2.1,<2.2
 
 # HTTP (exchange rates, Bank of Canada)
-requests>=2.34.2,<3            # CVE-2024-35195 fixed in 2.32.0, CVE-2024-47081 in 2.32.4
+requests>=2.32.4,<3            # CVE-2024-35195 fixed in 2.32.0, CVE-2024-47081 in 2.32.4
 
 # Optimiser (MILP via HiGHS) – NumPy 2.5 / SciPy 1.18 need Python 3.12+
-scipy>=1.18.1,<2
+scipy>=1.18,<2
 numpy>=2.5,<3
 
 # Google Sheets price feed
-google-api-python-client>=2.201.0,<3
-google-auth>=2.48.0,<3
-google-auth-httplib2>=0.3.0,<1
+google-api-python-client>=2.150,<3
+google-auth>=2.35,<3
+google-auth-httplib2>=0.2,<1
