@@ -35,7 +35,7 @@
                 </td>
                 <td class="text-right">{{ row.accounts }}</td>
                 <td class="text-right">{{ row.securities }}</td>
-                <td class="text-right">{{ '{:,.2f}'.format(row.total) }} {{ p.base_currency }}</td>
+                <td class="text-right">{{ row.total|money(p.base_currency) }}{% if p.base_currency != active_portfolio.base_currency %} <span class="faint">{{ p.base_currency }}</span>{% endif %}</td>
                 <td>
                     <form method="POST" action="{{ url_for('rename_portfolio', portfolio_id=p.id) }}" style="display: flex; gap: 0.5rem;">
                         <input type="text" name="name" value="{{ p.name }}" required

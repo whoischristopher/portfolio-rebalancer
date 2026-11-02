@@ -16,7 +16,7 @@
         <div class="card flush">
             <div class="card-head">
                 <h2>Asset classes</h2>
-                <span class="card-sub">Portfolio value {{ base_currency }} {{ '{:,.0f}'.format(total_value) }}</span>
+                <span class="card-sub">Portfolio value {{ total_value|money(none, 0) }} {{ base_currency }}</span>
             </div>
             <table>
                 <thead><tr><th>Asset class</th><th class="text-right">Now</th><th class="text-right">Target</th></tr></thead>

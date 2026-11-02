@@ -276,7 +276,7 @@ def test_usd_buy_in_cad_account_flags_conversion():
     accts = [AccountIn(RRSP, "RRSP", False, 20000, currency="CAD")]
     pos = [PositionIn(RRSP, XIC, 1000), PositionIn(RRSP, ITOT, 10)]
     res = solve(problem(accts, pos, {CA: 60, US: 40}))
-    assert any("convert" in n and "USD" in n for n in res.notes)
+    assert any("convert about US$" in n and "from CAD" in n for n in res.notes), res.notes
 
 
 # --------------------------------------------------------------------------- #

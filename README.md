@@ -1,123 +1,193 @@
-Disclaimer:
-This project has been constructed mostly through vibe-coding with no manual code review.  No warranty is implied - use as it is.   
+# Portfolio Rebalancer
 
-This is an attempt at a simple web application that will help rebalance a equity portfolio against a desired asset allocation target.
+A self-hosted web app that turns a target asset allocation into a short list of trades across all of your
+accounts – RRSP, TFSA, LIRA, taxable and so on – while keeping realised capital gains, the number of trades and
+superficial losses in check. Built for Canadian investors (CAD base currency, USD-listed securities supported).
 
-Key features:
-- Google OAuth authentication
-- Private and public security products that are tied to asset classes.  Public security price updates via yFianance.
-- Securities can be restricted to specific accounts, a preference model, or unrestricted (any account)
-- Multi account types: Registered and non-registered.   Future features will take advantage of the tax-exempt nature of registered accounts.
-- Asset Allocation targets
-- Rebalance against the targets
+> **Disclaimer:** this project was built mostly through AI-assisted ("vibe") coding without a line-by-line manual
+> code review. No warranty is implied – check every trade before you place it, and keep backups of your data.
 
-How the rebalancer works:
-The plan is produced by an optimiser (mixed-integer program, solved with HiGHS via scipy) that
-weighs all possible trades at once instead of applying rules one after another.
-Logic: services/optimizer.py (pure, unit-tested). Database adapter: rebalancer.py.
+## Contents
+- [Features at a glance](#features-at-a-glance)
+- [Getting started](#getting-started)
+- [Accounts and tax status](#accounts-and-tax-status)
+- [Securities](#securities)
+- [Prices and exchange rates](#prices-and-exchange-rates)
+- [How the rebalancer works](#how-the-rebalancer-works)
+- [Multiple portfolios](#multiple-portfolios)
+- [Not (yet) handled](#not-yet-handled)
+- [Installation](#installation)
+- [Upgrading](#upgrading)
+- [Development](#development)
+
+## Features at a glance
+- Sign in with Google; several fully separate portfolios per login (e.g. yours and your spouse's)
+- Quick-start wizard: accounts → holdings and cash → target mix → first plan
+- Holdings entered by ticker; new securities and asset classes are created on the spot
+- Registered vs taxable accounts, with book value (ACB) tracked only where it matters for tax
+- Prices from your own Google Sheet (`GOOGLEFINANCE`), refreshed automatically when stale
+- An optimiser (mixed-integer program) that plans all trades at once: drift band, realised gains, trade count,
+  account preferences, superficial-loss rule, illiquid and provider-managed holdings
+- Dashboard showing each asset class's drift from target against the balanced band
+- Amounts shown as `$` in the portfolio's base currency and `US$` (or `C$`) for the other currency
+
+## Getting started
+1. **Sign in** and open **Quick start** (sidebar). The dashboard shows a setup checklist until everything is in place;
+   new portfolios open straight into the wizard. Each step saves as you go and can be re-run any time.
+2. **Accounts** – add several at once (name, type, currency).
+3. **Holdings and cash** – one account at a time. Type a ticker: one already in the portfolio is recognised (also with
+   exchange prefixes/suffixes, e.g. `XIC.TO` → `XIC`); a new one asks for a name, asset class (type a new name to create
+   the class), currency and optional price – pre-filled from your other portfolios when the same ticker exists there.
+   Entering a ticker you already hold in that account tops up the position. A batch with a bad row is rejected as a
+   whole, so nothing is half-saved.
+4. **Targets** – the share of the portfolio for each asset class, shown next to your current mix. Must total 100%.
+5. **Review** – generate the first plan.
+
+Afterwards, the Holdings page offers the same ticker-first entry per account ("Add holdings"), and Accounts,
+Securities and Targets can be edited on their own pages.
+
+## Accounts and tax status
+- **Registered (tax-sheltered):** RRSP, Spousal RRSP, TFSA, FHSA, RESP, RDSP, LIRA, LIF, RRIF. Choosing one of these
+  types marks the account registered. Non-Registered and Corporate are always taxable; "Other" leaves it to you.
+- The rebalancer only looks at registered vs taxable – all registered types behave the same. (A spousal RRSP belongs
+  in the annuitant's portfolio if you run separate ones.)
+- **Book value (ACB)** is tracked for taxable accounts only: enter the total cost, in the security's currency;
+  executing trades in the app updates it (average cost) and records realised gains. It isn't stored for registered
+  accounts – values there are cleared, and making an account registered (or moving a holding into one) clears it.
+  Making an account taxable flags its holdings' book value as missing until you enter it; a missing book value is
+  treated as all gain, the conservative choice.
+- Each book value carries an "as of" date. For provider-managed holdings (below) the Holdings page – and the
+  Rebalance page when taxable sells are in play – flags one that is missing, undated or more than 90 days old.
+
+## Securities
+- One price per security, used by every holding of it. Either filled from your price sheet (auto-update on) or typed
+  by hand (e.g. private funds – turn auto-update off).
+- **Account restrictions and priorities** (Securities page): *Restricted* – only the listed accounts may hold it
+  (a hard rule); *Prioritized* – prefer some accounts over others (a preference). Use these for asset location, e.g.
+  keep US-listed ETFs in the RRSP for the withholding-tax treaty exemption.
+- **Illiquid** (private funds and similar): bought but never sold. If they alone exceed their class's target, the
+  other targets shrink proportionally; beyond the band, the Rebalance page suggests a redemption request (how many
+  units, from which accounts – registered first). Recorded requests are left out of planning until you mark them
+  received, which updates units, book value, cash and realised gain in one step.
+- **Provider-managed** (e.g. a direct-indexing account held as one security at $1/unit): traded like any other
+  taxable position, but the superficial-loss checks are skipped for it – the provider's underlying trades are the
+  real dispositions – and its book value needs regular updates from your statements (see above).
+
+## Prices and exchange rates
+- **Price sheet:** a Google Sheet with tickers in column A (e.g. `TSE:XEC`, `NYSEARCA:ITOT`; the exchange prefix is
+  ignored when matching) and `=GOOGLEFINANCE(A2,"price")` in column B. Put its ID in Settings. One sheet prices every
+  portfolio of your login – list each ticker once. (Google Sheets replaced yfinance, which kept being rate-limited.)
+- **Freshness:** Dashboard, Holdings and Rebalance show when prices were last read, with an **Update prices** button.
+  When they're older than the refresh interval (Settings, default 15 minutes; 0 = off) those pages update them in the
+  background and reload; generating a plan updates them first. A failed read keeps the old prices and shows a small
+  "couldn't update" note (hover for the reason). GOOGLEFINANCE quotes can lag by up to 20 minutes.
+- Each plan records when it was made and which prices it used; the Rebalance page warns when prices are newer than
+  the plan, so share counts may be off.
+- **Exchange rates** (CAD/USD, spot – no FX spread) come from exchangerate-api.com and are cached for 4 hours; if the
+  site is unreachable the last cached rate is used.
+
+## How the rebalancer works
+The plan comes from an optimiser (mixed-integer program, solved with HiGHS via SciPy) that weighs all possible trades
+at once instead of applying rules one after another. Logic: `services/optimizer.py` (pure, unit-tested);
+database adapter: `rebalancer.py`.
 
 It minimises, in order of weight:
 - Drift outside the balanced band (Settings) – drift inside the band is nearly free, so it doesn't chase exact targets
-- Capital gains realised in non-registered accounts (from each holding's book value / ACB; losses aren't penalised)
-- Number of trades (+ the per-trade cost from Settings)
-- Number of positions – discourages new positions and closes small scattered positions when cheap
-- Buying in lower-priority accounts (Securities page priorities are preferences; restrictions are hard rules)
+- Capital gains realised in taxable accounts (from book value; losses aren't penalised)
+- Number of trades (plus the per-trade cost from Settings)
+- Number of positions – discourages new positions and closes small scattered ones when cheap
+- Buying in lower-priority accounts
 - Idle cash
 
-Two stages: first the cheapest plan that brings every class inside its band (portfolios already within
-their bands get no trades). Then, if any trades are needed, the same number of trades with no extra
-realised gain is re-sized to land as close to target as possible – the furthest-off classes first.
+Two stages: first the cheapest plan that brings every class inside its band (a portfolio already within its bands
+gets no trades). Then, if trades are needed anyway, the same number of trades with no extra realised gain is re-sized
+to land as close to target as possible – furthest-off classes first.
 
 Always respected:
-- Each account funds its own buys; no account's cash goes negative; FX at spot rate
-- Non-registered sells: Never / Ask / Allow (Settings). "Ask" plans without them and, if something is still
-  outside its band, offers the alternative with the gain it would realise
-- Superficial loss rule: no loss sale + repurchase of the same security in one plan, no buy within 30 days of a
-  recorded loss sale, no loss sale within 30 days of a recorded buy (only trades executed in this app are known)
-- Illiquid holdings (private funds; flag on the Securities page) are never sold. If they alone exceed their
-  class's target, the other targets shrink proportionally; beyond the band, the Rebalance page asks you to
-  file a redemption request and suggests how many units, from which accounts (registered first).
-  Recorded requests are left out of planning until you mark them received (units, ACB, cash, gain updated)
-- Provider-managed holdings (e.g. a direct-indexing account held as one security at $1/unit; flag on the
-  Securities page) are traded like any other taxable position (withdrawals priced by estimated gain), but the
-  superficial-loss checks are skipped for them – the provider's underlying stock trades are the real dispositions
+- Each account funds its own buys; no account's cash goes negative; FX at the spot rate (you're told when an account
+  needs to convert currency before buying)
+- Taxable sells: **Never / Ask / Allow** (Settings). *Ask* plans without them and, if something is still outside its
+  band, offers the alternative along with the gain it would realise
+- Superficial-loss rule: no loss sale and repurchase of the same security in one plan, no buy within 30 days of a
+  recorded loss sale, no loss sale within 30 days of a recorded buy. Only trades executed in this app are known.
+  Optionally also checked against a linked portfolio (Settings, default off)
 - Optional fractional final buy per account to use up leftover cash, without pushing a class past its band
 
-Prices:
-- Dashboard, Holdings and Rebalance show when prices were last read from your price sheet, with an Update prices button.
-- When prices are older than the refresh interval (Settings, per login, default 15 minutes; 0 = off), those pages
-  update them in the background and reload; generating a plan updates them first. A failed read leaves the old
-  prices in place and shows "couldn't update" (hover for the reason). Securities with auto-update off are never touched.
-- Each plan records when it was generated and which prices it used; the Rebalance page warns when prices have been
-  updated since, so share counts may be off.
+## Multiple portfolios
+- Switch the active portfolio from the selector at the top of the sidebar; manage them on the Portfolios page.
+- Each portfolio is fully separate: accounts, securities, asset classes, targets, holdings and book values,
+  rebalancing settings and plan. A page or form can only touch the active portfolio's data.
+- Shared between them: the price sheet and refresh interval (login settings), and a price typed by hand is copied to
+  the same ticker in your other portfolios.
+- A new portfolio can start with a one-time copy of the current one's asset classes, securities and targets.
+- Superficial loss across portfolios is opt-in: link your spouse's portfolio so a loss sale in one isn't paired with a
+  buy of the same ticker in the other.
 
-Getting data in:
-- Quick start (sidebar, and the dashboard checklist until setup is complete) walks through accounts → holdings & cash,
-  one account at a time → target mix → a first plan. Each step saves as you go; it can be re-run any time to add more.
-  New portfolios open straight into it.
-- Holdings are entered by ticker, several rows at once. A ticker already in the portfolio is recognised (also with
-  exchange prefixes/suffixes, e.g. XIC.TO → XIC); a new one asks for name, asset class (type a new name to create the
-  class), currency and optional price, pre-filled from your other portfolios when the same ticker exists there.
-  Entering a ticker you already hold in that account tops up the position (quantities and book values add).
-  A batch with a bad row is rejected as a whole, so nothing is half-saved.
-- Account types: choosing a registered type (RRSP, Spousal RRSP, TFSA, FHSA, RESP, RDSP, LIRA, LIF, RRIF) marks the
-  account registered; Non-Registered and Corporate are always taxable; "Other" leaves the checkbox to you.
-  Accounts can now be edited (name, type, currency, tax status) on the Accounts page.
+## Not (yet) handled
+Tax-loss harvesting, asset location beyond security restrictions/priorities, cross-account transfers, and trades
+placed outside the app (they aren't seen by the 30-day superficial-loss window).
 
-Multiple portfolios (e.g. yours and your spouse's) under one login:
-- Pick the active portfolio from the selector at the top of every page; manage them under "Manage portfolios…".
-- Each portfolio is fully separate: its own accounts, securities, asset classes, targets, holdings/book values,
-  rebalancing settings (Settings page, top card) and plan. A page or form can only touch the active portfolio's rows.
-- Only prices are shared: the price sheet (a login setting) fills every portfolio in one pass, and a price typed by
-  hand is copied to the same ticker in your other portfolios.
-- New portfolios can start with a one-time copy of the current portfolio's asset classes, securities and targets.
-- Superficial loss across portfolios is opt-in (Settings → "Superficial-Loss Check Across Portfolios", default off):
-  link your spouse's portfolio so a loss sale in one isn't paired with a buy of the same ticker in the other.
-- Upgrading: on first start, existing data moves into a portfolio called "My Portfolio" with your current settings
-  (back up `data/portfolio.db` first; the securities and asset-class tables are rebuilt to make tickers unique
-  per portfolio instead of globally).
-- Unused columns are dropped on start (users' old per-user settings once copied to their first portfolio,
-  accounts.priority/notes, securities.is_public). Back up `data/portfolio.db` before upgrading.
+## Installation
+Runs as a single Docker container with a SQLite database in `./data`.
 
-Book value tracking (taxable accounts only): enter ACB (total, in the security's currency) for non-registered
-holdings; executing trades in the app updates it (average cost) and records realised gains. ACB isn't stored for
-registered accounts: existing values are cleared on startup, and changing an account to registered (or moving a
-holding into one) clears it. Changing an account to taxable flags its holdings' book value as missing.
-Each book value carries an "as of" date. For provider-managed holdings that date matters: the provider's
-tax-loss harvesting lowers the ACB without any trade recorded here, so the Holdings page and (when taxable
-sells are in play) the Rebalance page flag one that is missing, undated or more than 90 days old.
+1. **Google Cloud project** (console.cloud.google.com):
+   - Enable the **Google Sheets API**.
+   - Configure the OAuth consent screen (External; add yourself as a test user) with the scopes `openid`, `email`,
+     `profile` and `https://www.googleapis.com/auth/spreadsheets.readonly`.
+   - Create an **OAuth client ID** (Web application) with the authorised redirect URI
+     `https://<your-host>/auth/callback` (`http://localhost:8080/auth/callback` for local testing).
+2. **Environment** – create a `.env` next to `docker-compose.yml`:
+   ```
+   SECRET_KEY=<long random string, e.g. from `openssl rand -hex 32`>
+   GOOGLE_CLIENT_ID=<from step 1>
+   GOOGLE_CLIENT_SECRET=<from step 1>
+   ```
+   `FLASK_ENV=production` makes the callback URL and session cookie HTTPS-only, so put the app behind a reverse proxy
+   with TLS (or leave it unset for plain-HTTP testing).
+3. **docker-compose.yml**:
+   ```yaml
+   services:
+     web:
+       build: .
+       container_name: portfolio_rebalancer
+       ports:
+         - "8080:5000"
+       environment:
+         - FLASK_ENV=production
+         - SECRET_KEY=${SECRET_KEY}
+         - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
+         - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
+         - DATABASE_URL=sqlite:////app/data/portfolio.db   # 4 slashes = absolute path
+       volumes:
+         - ./data:/app/data
+         - ./logs:/app/logs
+       restart: unless-stopped
+       healthcheck:
+         test: ["CMD", "curl", "-f", "http://localhost:5000/"]
+         interval: 30s
+         timeout: 10s
+         retries: 3
+         start_period: 40s
+   ```
+   (The `docker-compose.yml` in the repo also mounts the source tree into the container – handy for development,
+   not needed to run it.)
+4. `docker compose up -d --build`, sign in, then set your price sheet ID in **Settings** and open **Quick start**.
 
-Not (yet) handled: tax-loss harvesting, asset location beyond security priorities, cross-account transfers,
-trades placed outside the app for the 30-day superficial loss window.
+## Upgrading
+Pull, rebuild and restart. Schema and data changes run automatically on startup (`migrations.py`, no Alembic) and are
+safe to run repeatedly. **Back up `data/portfolio.db` first** – some steps can't be undone:
+- Pre-portfolio databases move into a portfolio called "My Portfolio" with your old settings; the securities and
+  asset-class tables are rebuilt so tickers are unique per portfolio instead of globally.
+- Book values stored for registered accounts are cleared.
+- Unused columns are dropped (old per-user settings once copied to the first portfolio, `accounts.priority/notes`,
+  `securities.is_public`). Needs SQLite 3.35+ (the Docker image has it); otherwise they're left in place, harmlessly.
 
-Tests: `python -m pytest tests/ -q`
-
-Installation:
-- Clone/pull the code
-- Implement Google OAuth and obtain your Google_Client ID and Secret
-- Create docker-compose.yml (using sample beblow and modify as necessary), and off you go.
-
-sample docker-compose.yml:
-````
-services:
-  web:
-    build: .
-    container_name: portfolio_rebalancer
-    ports:
-      - "8080:5000"
-    environment:
-      - FLASK_ENV=production
-      - SECRET_KEY=${SECRET_KEY}
-      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
-      - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
-      - DATABASE_URL=${DATABASE_URL}
-    volumes:
-      - ./data:/app/data
-      - ./logs:/app/logs
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:5000/"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 40s
+## Development
+```
+pip install -r requirements.txt
+SECRET_KEY=dev GOOGLE_CLIENT_ID=… GOOGLE_CLIENT_SECRET=… python app.py      # http://localhost:5000
+python -m pytest tests/ -q
+```
+Layout: `app.py` (routes), `models.py`, `migrations.py`, `rebalancer.py` (database ↔ optimiser), `services/`
+(`optimizer.py`, `prices.py`, `fx.py`, `portfolio.py`, `entry.py` for data entry, `money.py` for amount formatting),
+`templates/`, `static/` (`app.css`, `app.js`), `tests/`.

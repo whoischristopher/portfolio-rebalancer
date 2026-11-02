@@ -63,8 +63,8 @@
                     <td><strong>{{ h.security.ticker }}</strong><span class="sub">{{ h.security.name or '' }}</span></td>
                     <td>{{ h.security.asset_class.name if h.security.asset_class else '—' }}</td>
                     <td class="text-right num">{{ '{:,.4f}'.format(h.quantity).rstrip('0').rstrip('.') }}</td>
-                    <td class="text-right num">{% if h.security.last_price %}{{ h.security.currency }} {{ '{:,.2f}'.format(h.security.last_price) }}{% else %}<span class="badge badge-warn">no price</span>{% endif %}</td>
-                    {% if not account.is_registered %}<td class="text-right num">{% if h.book_value is not none %}{{ '{:,.2f}'.format(h.book_value) }}{% else %}<span class="badge badge-warn">missing</span>{% endif %}</td>{% endif %}
+                    <td class="text-right num">{% if h.security.last_price %}{{ h.security.last_price|money(h.security.currency) }}{% else %}<span class="badge badge-warn">no price</span>{% endif %}</td>
+                    {% if not account.is_registered %}<td class="text-right num">{% if h.book_value is not none %}{{ h.book_value|money(h.security.currency) }}{% else %}<span class="badge badge-warn">missing</span>{% endif %}</td>{% endif %}
                 </tr>
                 {% endfor %}
                 </tbody>

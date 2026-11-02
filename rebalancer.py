@@ -135,6 +135,7 @@ def build_problem(portfolio, exchange_rates, allow_taxable_sells: bool) -> tuple
         recent_buys=recent_buys,
         recent_loss_sells=recent_loss_sells,
         fractional_final=bool(portfolio.precision_rebalancing),
+        base_currency=portfolio.base_currency or 'CAD',
     )
     return problem, notes
 

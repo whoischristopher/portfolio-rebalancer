@@ -44,8 +44,7 @@
                 <th>Asset class</th>
                 <th class="text-right">Quantity</th>
                 <th class="text-right">Price</th>
-                <th class="text-right">Market value</th>
-                <th class="text-right">Value ({{ base_currency }})</th>
+                <th class="text-right" title="Quantity × price, in {{ base_currency }} at today's exchange rate">Market value ({{ base_currency }})</th>
                 {% if not account.is_registered %}<th class="text-right" title="Total adjusted cost base, in the security's currency – used to estimate capital gains">Book value</th>{% endif %}
                 <th></th>
             </tr>
@@ -61,12 +60,12 @@
                 </td>
                 <td>{{ holding.security.asset_class.name if holding.security.asset_class else '—' }}</td>
                 <td class="text-right num">{{ '{:,.4f}'.format(holding.quantity).rstrip('0').rstrip('.') }}</td>
-                <td class="text-right num">{% if holding.price %}{{ '{:,.2f}'.format(holding.price) }} <span class="faint">{{ holding.currency }}</span>{% else %}<span class="badge badge-warn">no price</span>{% endif %}</td>
-                <td class="text-right num">{{ '{:,.2f}'.format(holding.market_value) }} <span class="faint">{{ holding.currency }}</span></td>
-                <td class="text-right num"><strong>{{ '{:,.2f}'.format(holding.market_value_in_base_currency(exchange_rates)) }}</strong></td>
+                <td class="text-right num">{% if holding.price %}{{ holding.price|money(holding.currency) }}{% else %}<span class="badge badge-warn">no price</span>{% endif %}</td>
+                <td class="text-right num"><strong>{{ holding.market_value_in_base_currency(exchange_rates)|money }}</strong>
+                    {% if holding.currency != base_currency %}<span class="sub">{{ holding.market_value|money(holding.currency) }}</span>{% endif %}</td>
                 {% if not account.is_registered %}
                 <td class="text-right num">
-                    {% if holding.book_value is not none %}{{ '{:,.2f}'.format(holding.book_value) }}
+                    {% if holding.book_value is not none %}{{ holding.book_value|money(holding.currency) }}
                         {% if holding.security.is_managed %}<span class="sub">{% if holding.book_value_as_of %}as of {{ holding.book_value_as_of.isoformat() }}{% else %}no date{% endif %}</span>{% endif %}
                         {% if holding.book_value_stale %}<span class="badge badge-warn" title="The provider's tax-loss harvesting lowers this over time – update it from your latest statement">update</span>{% endif %}
                     {% else %}<span class="badge badge-warn" title="Missing – the rebalancer will assume the whole sale is gain">missing</span>{% endif %}
@@ -81,8 +80,8 @@
             </tr>
             {% endfor %}
             <tr class="total-row">
-                <td colspan="5">Account total, including {{ '{:,.2f}'.format(account.cash_balance or 0) }} {{ account.currency }} cash</td>
-                <td class="text-right num">{{ '{:,.2f}'.format(total_base + ((account.cash_balance or 0) * (exchange_rates.get(account.currency ~ '_TO_' ~ base_currency, 1.0) if account.currency != base_currency else 1.0))) }}</td>
+                <td colspan="4">Account total, including {{ (account.cash_balance or 0)|money(account.currency) }} cash</td>
+                <td class="text-right num">{{ (total_base + ((account.cash_balance or 0) * (exchange_rates.get(account.currency ~ '_TO_' ~ base_currency, 1.0) if account.currency != base_currency else 1.0)))|money }}</td>
                 <td colspan="{{ 1 if account.is_registered else 2 }}"></td>
             </tr>
         </tbody>

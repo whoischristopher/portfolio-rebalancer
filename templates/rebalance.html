@@ -16,7 +16,7 @@
     <div class="stats">
         <div>
             <div class="stat-label">Portfolio value</div>
-            <div class="stat-value num">{{ "{:,.2f}".format(total_portfolio) }} <small>{{ base_currency }}</small></div>
+            <div class="stat-value num">{{ total_portfolio|money }} <small>{{ base_currency }}</small></div>
         </div>
         {% if plan and plan.generated_at %}
         <div>
@@ -42,7 +42,7 @@
         {{ "%.2f"|format(balanced_threshold) }}-point band. File a redemption request with the provider, then record it
         here: the units are left out of planning until the money arrives, so the rest of the portfolio is ready for it.</p>
     {% for r in plan.redemptions %}
-    <h3 style="font-size: 1rem; margin-top: 1rem;">{{ r.asset_class }} &ndash; redeem about {{ base_currency }} ${{ "{:,.0f}".format(r.amount) }}</h3>
+    <h3 style="font-size: 1rem; margin-top: 1rem;">{{ r.asset_class }} &ndash; redeem about {{ (r.amount)|money(none, 0) }}</h3>
     <table>
         <thead><tr><th>Account</th><th>Security</th><th class="text-right">Available units</th><th class="text-right">Suggested units</th><th class="text-right">≈ Value</th><th>Record request</th></tr></thead>
         <tbody>
@@ -52,7 +52,7 @@
             <td><strong>{{ o.ticker }}</strong></td>
             <td class="text-right">{{ "{:,.4f}".format(o.available) }}</td>
             <td class="text-right">{{ "{:,.4f}".format(o.suggested_units) }}</td>
-            <td class="text-right">{{ o.currency }} ${{ "{:,.0f}".format(o.suggested_value) }}</td>
+            <td class="text-right">{{ o.suggested_value|money(o.currency, 0) }}</td>
             <td>
                 <form method="POST" action="{{ url_for('add_redemption') }}" style="display:flex; gap:0.4rem; align-items:center; flex-wrap:wrap;">
                     <input type="hidden" name="account_id" value="{{ o.account_id }}">
@@ -113,7 +113,7 @@
             Allowing non-registered sells would bring
             <strong>{{ plan.offer.fixes|join(', ') if plan.offer.fixes else 'the remaining drift' }}</strong> back within the band
             using {{ plan.offer.taxable_sells }} non-registered sell(s) ({{ plan.offer.trades }} trades in total),
-            realising an estimated <strong>{{ base_currency }} ${{ "{:,.0f}".format(plan.offer.realized_gain) }}</strong>
+            realising an estimated <strong>{{ (plan.offer.realized_gain)|money(none, 0) }}</strong>
             {{ 'capital gain' if plan.offer.realized_gain >= 0 else 'capital loss' }}.
             {% if plan.offer.still_out %}Still outside the band even then: {{ plan.offer.still_out|join(', ') }}.{% endif %}
         </p>
@@ -126,7 +126,7 @@
     {% if plan.override == 'allow' %}
     <div style="padding: 0.75rem; background: var(--danger-soft); border-left: 4px solid var(--danger); border-radius: 4px; margin-bottom: 1rem;">
         This plan <strong>includes non-registered sells</strong> (you opted in).
-        Estimated realised {{ 'gain' if plan.realized_gain >= 0 else 'loss' }}: <strong>{{ base_currency }} ${{ "{:,.0f}".format(plan.realized_gain|abs) }}</strong>.
+        Estimated realised {{ 'gain' if plan.realized_gain >= 0 else 'loss' }}: <strong>{{ (plan.realized_gain|abs)|money(none, 0) }}</strong>.
         <form method="POST" action="{{ url_for('generate_rebalance') }}" style="display: inline; margin-left: 0.5rem;">
             <button type="submit" class="btn btn-sm">Go back to the plan without them</button>
         </form>
@@ -147,7 +147,7 @@
     </table>
     <p style="margin-top: 0.75rem; color: var(--muted); font-size: 0.9rem;">
         {{ plan.trades }} trade(s) &middot; {{ plan.taxable_sells }} non-registered sell(s)
-        {% if plan.taxable_sells %}&middot; est. realised {{ 'gain' if plan.realized_gain >= 0 else 'loss' }} {{ base_currency }} ${{ "{:,.0f}".format(plan.realized_gain|abs) }}{% endif %}
+        {% if plan.taxable_sells %}&middot; est. realised {{ 'gain' if plan.realized_gain >= 0 else 'loss' }} {{ (plan.realized_gain|abs)|money(none, 0) }}{% endif %}
         &middot; mode: {{ plan.mode }}{% if plan.status != 'optimal' %} &middot; <span style="color:var(--warn)">solver time limit reached</span>{% endif %}
     </p>
     {% if plan.notes %}
@@ -219,7 +219,7 @@ function toggleRebalancingInfo() {
             {% for item in comparison_data %}
             <tr>
                 <td><strong>{{ item.asset_class_name }}</strong></td>
-                <td class="text-right">{{ base_currency }} ${{ "{:,.2f}".format(item.current_value) }}</td>
+                <td class="text-right">{{ item.current_value|money }}</td>
                 <td class="text-right">{{ "%.2f"|format(item.current_pct) }}%</td>
                 <td class="text-right">{{ "%.2f"|format(item.target_pct) }}%</td>
                 <td class="text-right">
@@ -245,7 +245,7 @@ function toggleRebalancingInfo() {
             
             <tr style="background: var(--bg); font-weight: bold; border-top: 2px solid var(--line);">
                 <td>Total</td>
-                <td class="text-right">{{ base_currency }} ${{ "{:,.2f}".format(total_portfolio) }}</td>
+                <td class="text-right">{{ total_portfolio|money }}</td>
                 <td class="text-right">{{ "%.2f"|format(comparison_data|sum(attribute='current_pct')) }}%</td>
                 <td class="text-right">{{ "%.2f"|format(comparison_data|sum(attribute='target_pct')) }}%</td>
                 <td colspan="2"></td>
@@ -314,16 +314,16 @@ function toggleRebalancingInfo() {
                 </td>
                 <td class="text-right">
                     {% if not txn.requires_user_selection %}
-                        {{ txn.currency }} ${{ "{:,.2f}".format(txn.price) }}
+                        {{ txn.price|money(txn.currency) }}
                     {% else %}
                         —
                     {% endif %}
                 </td>
                 <td class="text-right">
-                    <strong>{{ txn.currency }} ${{ "{:,.2f}".format(txn.amount) }}</strong>
+                    <strong>{{ txn.amount|money(txn.currency) }}</strong>
                     {% if txn.action == 'SELL' and txn.realized_gain is not none %}
                         <br><span style="font-size: 0.8rem; color: {{ 'var(--danger)' if txn.realized_gain > 0 else 'var(--ok)' }};">
-                            est. {{ 'gain' if txn.realized_gain >= 0 else 'loss' }} {{ base_currency }} ${{ "{:,.0f}".format(txn.realized_gain|abs) }}
+                            est. {{ 'gain' if txn.realized_gain >= 0 else 'loss' }} {{ (txn.realized_gain|abs)|money(none, 0) }}
                         </span>
                     {% endif %}
                 </td>

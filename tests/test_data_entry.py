@@ -254,3 +254,15 @@ def test_book_value_only_in_taxable_accounts(fresh_user):
     r = c.post(f"/accounts/{ref['nr']}/edit", data={"name": "Taxable", "account_type": "Non-Registered",
                                                     "currency": "CAD"}, follow_redirects=True)
     assert b"is now taxable: enter the book value" in r.data
+
+
+def test_money_formatting():
+    from services.money import fmt_money
+    assert fmt_money(1234.5) == "$1,234.50"
+    assert fmt_money(1234.5, "CAD", "CAD", 0) == "$1,234"            # .5 rounds to even
+    assert fmt_money(-20, "CAD", "CAD") == "−$20.00"
+    assert fmt_money(-0.001, "CAD", "CAD") == "$0.00"                 # no "−$0.00"
+    assert fmt_money(5, "USD", "CAD") == "US$5.00"
+    assert fmt_money(5, "CAD", "USD") == "C$5.00"
+    assert fmt_money(5, "USD", "USD") == "$5.00"
+    assert fmt_money(None) == "—"
