@@ -7,7 +7,7 @@ for FX logic.
 """
 import logging
 import requests
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from extensions import db
 from models import ExchangeRate
 
@@ -79,6 +79,59 @@ def get_exchange_rates(_portfolio=None) -> dict:
             except Exception as exc:
                 log.error("Could not obtain rate %s: %s", key, exc)
     return rates
+
+
+# --------------------------------------------------------------------------- #
+# Bank of Canada daily rates (for tax: the CRA accepts the BoC rate on the day of
+# the transaction). Valet API, no key needed. Rates only change once a day and past
+# days never change, so a small in-process cache is enough.
+# --------------------------------------------------------------------------- #
+BOC_VALET_URL = "https://www.bankofcanada.ca/valet/observations/FX{ccy}CAD/json"
+_BOC_LOOKBACK_DAYS = 10       # weekends/holidays have no observation: use the last one before
+_boc_cache: dict = {}
+
+
+class BocRateError(Exception):
+    pass
+
+
+def _boc_to_cad(ccy: str, on_date: date) -> tuple[float, date]:
+    """(rate ccy→CAD, observation date) for the last BoC observation on or before on_date."""
+    if ccy == "CAD":
+        return 1.0, on_date
+    key = (ccy, on_date)
+    if key in _boc_cache:
+        return _boc_cache[key]
+    try:
+        resp = requests.get(BOC_VALET_URL.format(ccy=ccy), timeout=10, params={
+            "start_date": (on_date - timedelta(days=_BOC_LOOKBACK_DAYS)).isoformat(),
+            "end_date": on_date.isoformat(),
+        })
+        resp.raise_for_status()
+        series = f"FX{ccy}CAD"
+        obs = [(o["d"], o[series]["v"]) for o in resp.json().get("observations", []) if series in o]
+    except Exception as exc:
+        raise BocRateError(f"Bank of Canada rate lookup failed: {exc}") from exc
+    obs = [(d, v) for d, v in obs if d <= on_date.isoformat()]
+    if not obs:
+        raise BocRateError(f"No Bank of Canada {ccy}/CAD rate published on or before {on_date.isoformat()}")
+    d, v = max(obs)
+    result = (float(v), date.fromisoformat(d))
+    if on_date < date.today():           # today's rate may not be published yet: don't cache a miss-day
+        _boc_cache[key] = result
+    return result
+
+
+def boc_rate(from_curr: str, to_curr: str, on_date: date) -> tuple[float, date]:
+    """Bank of Canada rate from_curr→to_curr on on_date (crossed through CAD when neither
+    side is CAD). Returns (rate, observation date). Raises BocRateError."""
+    if from_curr == to_curr:
+        return 1.0, on_date
+    f, fd = _boc_to_cad(from_curr, on_date)
+    t, td = _boc_to_cad(to_curr, on_date)
+    # CAD legs report on_date itself; the real observation date is the other leg's.
+    obs_dates = [d for c, d in ((from_curr, fd), (to_curr, td)) if c != "CAD"]
+    return f / t, min(obs_dates)
 
 
 def convert_to_base(amount: float, from_currency: str, to_currency: str,

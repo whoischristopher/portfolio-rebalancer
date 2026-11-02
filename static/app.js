@@ -232,6 +232,102 @@
     }
   }
 
+  /* ---------- Record an executed trade (rebalance page) ---------- */
+  function localISODate() {
+    const d = new Date();
+    return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+  }
+  const numOf = (input) => (input ? parseFloat(input.value) : NaN);
+  const fmtAmount = (v, ccy) => v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' ' + ccy;
+
+  function updateExecTotal(form) {
+    const out = form.querySelector('[data-exec-total]');
+    if (!out) return;
+    const q = numOf(form.elements.quantity), p = numOf(form.elements.fill_price);
+    const c = numOf(form.elements.commission) || 0;
+    if (!(q > 0 && p > 0)) { out.textContent = ''; return; }
+    const ccy = form.dataset.ccy;
+    const gross = q * p;
+    const planned = parseFloat(form.dataset.plannedQty) * parseFloat(form.dataset.plannedPrice);
+    const total = form.dataset.action === 'SELL' ? gross - c : gross + c;
+    const diff = gross - planned;
+    out.textContent = (form.dataset.action === 'SELL' ? 'Net proceeds: ' : 'Total cost: ') + fmtAmount(total, ccy) +
+      (Math.abs(diff) >= 0.005 ? ` (${diff > 0 ? '+' : ''}${fmtAmount(diff, ccy)} vs plan)` : ' (as planned)');
+  }
+
+  async function lookupBoc(form) {
+    const fxInput = form.querySelector('[data-fx-rate]');
+    if (!fxInput || fxInput.dataset.touched) return;
+    const status = form.querySelector('[data-fx-status]');
+    const src = form.elements.fx_rate_source;
+    const day = form.elements.trade_date.value;
+    if (!day) return;
+    if (status) status.textContent = 'Looking up the Bank of Canada rate…';
+    try {
+      const resp = await fetch(`${fxInput.dataset.bocUrl}?currency=${encodeURIComponent(fxInput.dataset.ccy)}&date=${day}`,
+        { headers: { Accept: 'application/json' } });
+      const r = await resp.json();
+      if (!resp.ok || !r.rate) throw new Error(r.error || 'lookup failed');
+      if (fxInput.dataset.touched || form.elements.trade_date.value !== day) return;   // user moved on
+      fxInput.value = r.rate;
+      if (src) src.value = 'boc';
+      if (status) {
+        status.textContent = `Bank of Canada rate for ${r.observed_on}` +
+          (r.observed_on !== day ? ' (last published before the trade date)' : '') + '. Change it if you prefer your own.';
+      }
+    } catch (err) {
+      if (src) src.value = 'manual';
+      if (status) status.textContent = 'Couldn’t get the Bank of Canada rate – showing today’s spot rate. Enter the rate for the trade date if you have it.';
+    }
+  }
+
+  document.addEventListener('click', (e) => {
+    const opener = e.target.closest('[data-open-dialog]');
+    if (!opener) return;
+    const dlg = document.getElementById(opener.dataset.openDialog);
+    if (!dlg) return;
+    const form = dlg.querySelector('[data-exec-form]');
+    if (form) {
+      const d = form.elements.trade_date;
+      if (d && !d.dataset.set) { d.value = localISODate(); d.max = d.value; d.dataset.set = '1'; }
+      updateExecTotal(form);
+      lookupBoc(form);
+    }
+    dlg.showModal();
+  });
+
+  document.addEventListener('input', (e) => {
+    const form = e.target.closest('[data-exec-form]');
+    if (!form) return;
+    if (e.target.matches('[data-fx-rate]')) {
+      e.target.dataset.touched = '1';
+      if (form.elements.fx_rate_source) form.elements.fx_rate_source.value = 'manual';
+      const status = form.querySelector('[data-fx-status]');
+      if (status) status.textContent = 'Your own rate.';
+    }
+    updateExecTotal(form);
+  });
+  document.addEventListener('change', (e) => {
+    const form = e.target.closest('[data-exec-form]');
+    if (form && e.target.name === 'trade_date') lookupBoc(form);
+  });
+
+  // Catch typos before they end up in the book value: a fill far from the planned price.
+  document.addEventListener('submit', (e) => {
+    const form = e.target.closest('[data-exec-form]');
+    if (!form) return;
+    const p = numOf(form.elements.fill_price), planned = parseFloat(form.dataset.plannedPrice);
+    const q = numOf(form.elements.quantity), plannedQty = parseFloat(form.dataset.plannedQty);
+    const warn = [];
+    if (planned > 0 && Math.abs(p - planned) / planned > 0.05) {
+      warn.push(`The fill price ${p} is ${(100 * (p - planned) / planned).toFixed(1)}% away from the planned ${planned}.`);
+    }
+    if (form.dataset.action === 'SELL' && q > plannedQty + 1e-9) {
+      warn.push(`You're recording a sale of ${q}, more than the ${plannedQty} planned.`);
+    }
+    if (warn.length && !confirm(warn.join('\n') + '\n\nRecord it anyway?')) e.preventDefault();
+  });
+
   /* ---------- Init ---------- */
   document.addEventListener('DOMContentLoaded', () => {
     document.querySelectorAll('[data-account-scope]').forEach(syncRegistered);

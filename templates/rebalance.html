@@ -259,7 +259,7 @@ function toggleRebalancingInfo() {
 {% if transactions %}
 <div class="card">
     <h2>Rebalance Transactions</h2>
-    <p style="color: var(--muted); margin-bottom: 1rem;">Execute these transactions in order. The plan will refresh after each execution.</p>
+    <p style="color: var(--muted); margin-bottom: 1rem;">Place these trades at your brokerage in order. After each one, click <strong>Executed…</strong> and enter the actual fill: the remaining trades are then re-planned from the real cash left, so the last buy in each account is re-sized for you.</p>
     
     <table>
         <thead>
@@ -331,11 +331,57 @@ function toggleRebalancingInfo() {
                     {% if txn.requires_user_selection %}
                         <button type="submit" form="select-form-{{ txn.id }}" class="btn btn-sm btn-primary">Select & Execute</button>
                     {% else %}
-                        <form method="POST" action="{{ url_for('execute_rebalance_transaction', transaction_id=txn.id) }}" style="display: inline;">
-                            <button type="submit" class="btn btn-sm btn-success" onclick="return confirm('Execute this transaction?');">
-                                ✓ Execute
-                            </button>
-                        </form>
+                        {% set x = exec_ctx[txn.id] %}
+                        <button type="button" class="btn btn-sm btn-success" data-open-dialog="exec-{{ txn.id }}">✓ Executed…</button>
+                        <dialog class="modal" id="exec-{{ txn.id }}" style="text-align: left;">
+                            <h2>Record {{ txn.action|lower }}: {{ txn.security.ticker }}</h2>
+                            <p class="small" style="color: var(--muted); margin-top: -0.5rem;">
+                                {{ txn.account.name }}{% if x.taxable %} (taxable){% endif %} &middot;
+                                planned {{ "%g"|format(txn.quantity) }} @ {{ txn.price|money(x.sec_ccy) }}.
+                                Enter what your brokerage actually filled.
+                            </p>
+                            <form method="POST" action="{{ url_for('execute_rebalance_transaction', transaction_id=txn.id) }}"
+                                  data-exec-form data-planned-price="{{ txn.price }}" data-planned-qty="{{ txn.quantity }}"
+                                  data-action="{{ txn.action }}" data-ccy="{{ x.sec_ccy }}">
+                                <div class="form-grid" style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem;">
+                                    <label>Fill price ({{ x.sec_ccy }})
+                                        <input type="number" name="fill_price" step="any" min="0" required value="{{ txn.price }}">
+                                    </label>
+                                    <label>Quantity
+                                        <input type="number" name="quantity" step="any" min="0" required value="{{ txn.quantity }}">
+                                    </label>
+                                    {% if x.show_commission %}
+                                    <label>Commission ({{ x.sec_ccy }})
+                                        <input type="number" name="commission" step="0.01" min="0" value="{{ '%.2f'|format(x.commission) }}">
+                                    </label>
+                                    {% endif %}
+                                    <label>Trade date
+                                        <input type="date" name="trade_date" data-today required value="{{ today.isoformat() }}" max="{{ today.isoformat() }}">
+                                    </label>
+                                    {% if x.needs_fx %}
+                                    <label>{{ x.sec_ccy }}→{{ base_currency }} rate on trade date
+                                        <input type="number" name="fx_rate" step="any" min="0" value="{{ x.spot_rate }}" data-fx-rate data-ccy="{{ x.sec_ccy }}" data-boc-url="{{ url_for('api_boc_rate') }}">
+                                        <input type="hidden" name="fx_rate_source" value="manual">
+                                        <span class="small" data-fx-status style="color: var(--muted);">Spot rate; looking up the Bank of Canada rate…</span>
+                                    </label>
+                                    {% endif %}
+                                </div>
+                                {% if txn.is_final_trade %}
+                                <p class="small" style="color: var(--warn); margin-top: 0.75rem;">
+                                    Last trade for this account, sized to use up its remaining cash at the planned price.
+                                    If you placed it at a different price, enter the quantity your brokerage filled.
+                                </p>
+                                {% endif %}
+                                {% if not x.taxable %}
+                                <p class="small" style="color: var(--muted); margin-top: 0.75rem;">The date is still needed in a registered account: a buy here within 30 days of a loss sale in a taxable account makes that loss superficial.</p>
+                                {% endif %}
+                                <p class="small" data-exec-total style="margin-top: 0.75rem;"></p>
+                                <div style="display: flex; gap: 0.5rem; justify-content: flex-end; margin-top: 1rem;">
+                                    <button type="button" class="btn btn-ghost" onclick="this.closest('dialog').close()">Cancel</button>
+                                    <button type="submit" class="btn btn-success">Record trade</button>
+                                </div>
+                            </form>
+                        </dialog>
                     {% endif %}
                 </td>
             </tr>

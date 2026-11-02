@@ -20,6 +20,8 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timedelta
 
+from sqlalchemy import and_, or_
+
 from extensions import db
 from models import (Account, Holding, PendingRedemption, RebalanceTransaction,
                     Security, SecurityPreference, Target)
@@ -173,12 +175,16 @@ def _superficial_loss_history(portfolio, notes: list) -> tuple[set, set]:
     affiliated person under the rule. Portfolios have separate security lists, so the
     linked trades are matched to this portfolio's securities by ticker."""
     since = datetime.utcnow() - timedelta(days=SUPERFICIAL_LOSS_DAYS)
+    T = RebalanceTransaction
 
     def recent(portfolio_id):
-        return RebalanceTransaction.query.filter(
-            RebalanceTransaction.portfolio_id == portfolio_id,
-            RebalanceTransaction.executed.is_(True),
-            RebalanceTransaction.executed_at >= since,
+        # The window runs from the date the trade was placed (trade_date), which can be
+        # earlier than when it was recorded here; older rows without one fall back.
+        return T.query.filter(
+            T.portfolio_id == portfolio_id,
+            T.executed.is_(True),
+            or_(T.trade_date >= since.date(),
+                and_(T.trade_date.is_(None), T.executed_at >= since)),
         ).all()
 
     def split(txns, sec_id_of):

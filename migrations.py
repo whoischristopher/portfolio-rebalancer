@@ -35,6 +35,13 @@ ADDED_COLUMNS = [
     ('holdings', 'book_value_as_of', 'DATE'),
     ('users', 'prices_updated_at', 'DATETIME'),
     ('users', 'price_refresh_minutes', 'INTEGER DEFAULT 15'),
+    # Actual fills recorded when a trade is executed
+    ('rebalance_transactions', 'planned_quantity', 'FLOAT'),
+    ('rebalance_transactions', 'planned_price', 'FLOAT'),
+    ('rebalance_transactions', 'commission', 'FLOAT'),
+    ('rebalance_transactions', 'trade_date', 'DATE'),
+    ('rebalance_transactions', 'fx_rate', 'FLOAT'),
+    ('rebalance_transactions', 'fx_rate_source', 'VARCHAR(20)'),
 ]
 
 # Tables scoped to a portfolio. Those with a user_id column are backfilled from it.
@@ -72,7 +79,8 @@ def run_all():
     repair_cross_portfolio_refs()
     add_portfolio_indexes()
     clear_registered_book_values()
-    drop_dead_columns()                # last: earlier steps may still read these
+    backfill_trade_dates()
+    drop_dead_columns()               # last: earlier steps may still read these
 
 
 # --------------------------------------------------------------------------- #
@@ -274,6 +282,18 @@ def clear_registered_book_values():
     if n:
         db.session.commit()
         log.info('Migrated: cleared book value on %d holding(s) in registered accounts', n)
+
+
+def backfill_trade_dates():
+    """Trades recorded before trade_date existed: use the day they were recorded. The
+    superficial-loss window counts from trade_date. Idempotent."""
+    from models import RebalanceTransaction as T
+    rows = T.query.filter(T.executed.is_(True), T.trade_date.is_(None), T.executed_at.isnot(None)).all()
+    for t in rows:
+        t.trade_date = t.executed_at.date()
+    if rows:
+        db.session.commit()
+        log.info('Migrated: set trade date on %d previously executed trade(s)', len(rows))
 
 
 def drop_dead_columns():
