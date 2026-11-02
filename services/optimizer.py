@@ -42,6 +42,8 @@ import numpy as np
 from scipy.optimize import Bounds, LinearConstraint, milp
 from scipy.sparse import lil_matrix
 
+from services.money import fmt_money
+
 log = logging.getLogger(__name__)
 
 _GAP_ANCHOR = 10_000.0   # see solve(): turns the relative MIP gap into ~absolute dollars
@@ -111,6 +113,7 @@ class Problem:
     recent_buys: set[int] = field(default_factory=set)        # sec ids bought ≤30d ago (any account)
     recent_loss_sells: set[int] = field(default_factory=set)  # sec ids sold at a loss ≤30d ago (taxable)
     fractional_final: bool = True
+    base_currency: str = "CAD"               # for amounts in notes only
     aim_for_target: bool = True     # stage 2: same trade count & tax, sized toward target
     weights: Weights = field(default_factory=Weights)
     time_limit: float = 10.0
@@ -199,7 +202,8 @@ def solve(p: Problem) -> Result:
     if abs(tsum - 100) > 0.01:
         notes.append(f"Targets add up to {tsum:.2f}%, not 100% – the plan cannot fully converge.")
     if untargeted:
-        notes.append(f"{sum(untargeted.values()):,.0f} is held in asset classes with no target; "
+        notes.append(f"{fmt_money(sum(untargeted.values()), None, p.base_currency, 0)} is held in asset classes "
+                     "with no target; "
                      "those holdings are left untouched.")
 
     # Holdings that can't be sold may alone exceed their class's target. That excess
@@ -461,7 +465,7 @@ def solve(p: Problem) -> Result:
                 net[t.currency] = net.get(t.currency, 0.0) + (1 if t.action == "BUY" else -1) * t.quantity * t.price_native
         for ccy, amt in net.items():
             if amt > 1:
-                notes.append(f"{a.name}: convert about {amt:,.2f} {ccy} from {a.currency} before buying "
+                notes.append(f"{a.name}: convert about {fmt_money(amt, ccy, p.base_currency)} from {a.currency} before buying "
                              "(planned at spot rate).")
 
     drift_after = {k: (after[k] - target_val[k]) / total * 100 for k in p.targets}

@@ -49,7 +49,7 @@
                 <th>Currency</th>
                 <th>Tax status</th>
                 <th class="text-right">Holdings</th>
-                <th class="text-right">Holdings value</th>
+                <th class="text-right">Holdings value ({{ active_portfolio.base_currency }})</th>
                 <th class="text-right">Cash</th>
                 <th></th>
             </tr>
@@ -62,8 +62,8 @@
                 <td>{{ account.currency }}</td>
                 <td>{% if account.is_registered %}<span class="badge badge-accent">Registered</span>{% else %}<span class="badge">Taxable</span>{% endif %}</td>
                 <td class="text-right num"><a href="{{ url_for('holdings') }}#account-{{ account.id }}">{{ account.holdings|length }}</a></td>
-                <td class="text-right num">{{ '{:,.2f}'.format(account.holdings|sum(attribute='market_value')) }}</td>
-                <td class="text-right num">{{ '{:,.2f}'.format(account.cash_balance or 0) }}</td>
+                <td class="text-right num">{{ account.total_value_in_base_currency(exchange_rates)|money }}</td>
+                <td class="text-right num">{{ (account.cash_balance or 0)|money(account.currency) }}</td>
                 <td class="actions-cell">
                     <button type="button" class="btn btn-secondary btn-sm" onclick="document.getElementById('edit-{{ account.id }}').showModal()">Edit</button>
                     <form method="POST" action="{{ url_for('delete_account', account_id=account.id) }}" onsubmit="return confirm('Delete {{ account.name }} and all its holdings?');">

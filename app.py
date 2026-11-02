@@ -40,6 +40,7 @@ from services.prices import (
     same_security_elsewhere,
 )
 from rebalancer import generate_plan
+from services.money import fmt_money
 from services.entry import (
     ACCOUNT_TYPES, CURRENCIES, NON_REGISTERED_ACCOUNT_TYPES, REGISTERED_ACCOUNT_TYPES, EntryError, lookup_elsewhere, parse_amount,
     parse_holding_rows, registered_flag, save_holding_rows, find_security, suggest_currency, upsert_holding,
@@ -123,6 +124,13 @@ def _p_asset_classes():
 
 def _p_securities():
     return Security.query.filter_by(portfolio_id=current_portfolio().id).order_by(Security.ticker.asc()).all()
+
+
+@app.template_filter('money')
+def _money_filter(value, ccy=None, decimals=2):
+    """{{ x|money }} – base currency;  {{ x|money('USD') }};  {{ x|money(none, 0) }} – no cents."""
+    base = current_portfolio().base_currency if current_user.is_authenticated else 'CAD'
+    return fmt_money(value, ccy, base, decimals)
 
 
 @app.context_processor
@@ -211,7 +219,8 @@ def dashboard():
 @app.route('/accounts')
 @login_required
 def accounts():
-    return render_template('accounts.html', accounts=_p_accounts())
+    return render_template('accounts.html', accounts=_p_accounts(),
+                           exchange_rates=get_exchange_rates(current_portfolio()))
 
 
 @app.route('/accounts/add', methods=['POST'])
@@ -1110,7 +1119,7 @@ def receive_redemption(redemption_id):
     ))
     r.status, r.received_on, r.proceeds = 'received', datetime.utcnow().date(), proceeds
     db.session.commit()
-    _regenerate_after_change(f'Redemption of {sec.ticker} received: {proceeds:,.2f} {sec.currency} '
+    _regenerate_after_change(f'Redemption of {sec.ticker} received: {fmt_money(proceeds, sec.currency, base)} '
                              f'added to {account.name} cash.')
     return redirect(url_for('rebalance'))
 

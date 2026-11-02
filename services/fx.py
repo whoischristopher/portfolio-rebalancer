@@ -54,6 +54,9 @@ def fetch_exchange_rate(from_curr: str, to_curr: str) -> float:
         log.warning("FX fetch failed (%s→%s): %s", from_curr, to_curr, exc)
         if cached:
             return cached.rate
+        # No live rate and nothing cached: rough fallback, in the right direction.
+        if (from_curr, to_curr) == ("CAD", "USD"):
+            return 1 / _FALLBACK_USD_CAD
         return _FALLBACK_USD_CAD
 
 

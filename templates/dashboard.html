@@ -39,11 +39,11 @@
     <div class="stats">
         <div>
             <div class="stat-label">Total value</div>
-            <div class="stat-value big num">{{ '{:,.0f}'.format(total_value) }} <small>{{ base_currency }}</small></div>
+            <div class="stat-value big num">{{ total_value|money(none, 0) }} <small>{{ base_currency }}</small></div>
         </div>
         <div>
             <div class="stat-label">Cash</div>
-            <div class="stat-value num">{{ '{:,.0f}'.format(cash_total.v) }} <small>{{ '%.1f'|format(cash_total.v / total_value * 100 if total_value else 0) }}%</small></div>
+            <div class="stat-value num">{{ cash_total.v|money(none, 0) }} <small>{{ '%.1f'|format(cash_total.v / total_value * 100 if total_value else 0) }}%</small></div>
         </div>
         <div>
             <div class="stat-label">Accounts</div>
@@ -78,7 +78,7 @@
         {% set diff = r.current - r.target %}
         {% set outside = (diff|abs) > band + 1e-9 %}
         <div class="alloc-row">
-        <div class="alloc-name">{{ r.name }}<span class="sub num">{{ base_currency }} {{ '{:,.0f}'.format(r.value) }}</span></div>
+        <div class="alloc-name">{{ r.name }}<span class="sub num">{{ r.value|money(none, 0) }}</span></div>
         <div class="track" role="img" aria-label="{{ r.name }}: {{ '%+.2f'|format(diff) }} points from its {{ '%g'|format(r.target) }}% target{{ ', outside the band' if outside }}">
             <div class="track-band" style="left: {{ 50 - band * half }}%; width: {{ band * half * 2 }}%;"></div>
             <div class="track-fill {{ 'outside' if outside else 'within' }}"
@@ -116,8 +116,8 @@
                 <td><a href="{{ url_for('holdings') }}#account-{{ account.id }}"><strong>{{ account.name }}</strong></a></td>
                 <td>{{ account.account_type or '—' }} {% if account.is_registered %}<span class="badge badge-accent">Registered</span>{% endif %}</td>
                 <td class="text-right num">{{ account.holdings|length }}</td>
-                <td class="text-right num">{{ '{:,.2f}'.format(account.cash_balance or 0) }} <span class="faint">{{ account.currency }}</span></td>
-                <td class="text-right num">{{ '{:,.2f}'.format(account.total_value_in_base_currency(exchange_rates)) }}</td>
+                <td class="text-right num">{{ (account.cash_balance or 0)|money(account.currency) }}</td>
+                <td class="text-right num">{{ account.total_value_in_base_currency(exchange_rates)|money }}</td>
             </tr>
             {% endfor %}
         </tbody>
