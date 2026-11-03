@@ -219,7 +219,8 @@ def test_per_account_replacements_form_and_plan(mig):
         assert {s.ticker for s in o.replacement_securities} == {"NEW", "ALT"}
     page = c.get(f"/securities/{ids['old']}/edit").get_data(as_text=True)
     assert "Exceptions for some accounts (2 set)" in page
-    assert "phasing out → NEW, ALT" in c.get("/securities").get_data(as_text=True)
+    # The badge lists replacements actually in use: TFSA → ALT, Joint keeps OLD, so NEW (the default) is unused.
+    assert "phasing out → ALT<" in c.get("/securities").get_data(as_text=True)
 
     c.post("/rebalance/generate")
     plan = _plan(app, ids)
