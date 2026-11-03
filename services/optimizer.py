@@ -25,10 +25,16 @@ What the optimiser minimises (every term is in "dollar-equivalent pain"):
   migrate    × $ of a phased-out security sold (a tie-breaker: when something in its
                asset class has to be sold anyway, sell the security being replaced)
 
+Stage 3 ("prefer losses"): with the plan's shape frozen – same number of trades, no
+more realised gain, every asset class ending where stage 2 put it – re-pick WHO sells
+so that taxable holdings at a loss are sold rather than registered ones (a loss in an
+RRSP/TFSA has no tax value; a taxable one offsets gains). It never adds trades.
+
 Hard constraints:
   * no account's cash goes negative (trades are funded inside the account)
   * cannot sell more than held; restricted securities only in allowed accounts
-  * taxable sells only when allowed (the "Ask" flow solves twice)
+  * taxable sells only when allowed (the "Ask" flow solves twice) – except, with
+    allow_loss_sells, a taxable holding at a loss (it realises no gain)
   * superficial-loss rule: a security sold at a loss in a taxable account
     cannot be bought in ANY account in the same plan; securities bought in
     the last 30 days cannot be sold at a loss in a taxable account; and
@@ -109,6 +115,8 @@ class Weights:
     priority: float = 0.002
     idle_cash: float = 0.01
     turnover: float = 0.0005             # per $ traded – prefers small moves over big swaps
+    loss: float = 0.25                   # stage 3: value per $ of capital loss realised in a taxable
+                                         # account (≈ 50% inclusion × a high marginal rate)
     migrate: float = 0.001               # per $ of a phased-out security sold – a tie-breaker only,
                                          # far below a ticket or any tax, so it never adds trades
     # Stage 2 ("aim for target"): convex in-band cost per $, by quarter of the band.
@@ -128,6 +136,8 @@ class Problem:
     threshold_pp: float = 0.5
     trade_cost: float = 0.0                   # base currency per trade
     allow_taxable_sells: bool = True
+    allow_loss_sells: bool = False            # taxable sells at a loss even when taxable sells aren't allowed
+    prefer_loss_sales: bool = True            # stage 3: sell taxable losers rather than registered holdings
     recent_buys: set[int] = field(default_factory=set)        # sec ids bought ≤30d ago (any account)
     recent_loss_sells: set[int] = field(default_factory=set)  # sec ids sold at a loss ≤30d ago (taxable)
     fractional_final: bool = True
@@ -160,7 +170,8 @@ class Result:
     drift_before: dict[int, float]    # asset_class_id -> percentage points vs effective target
     drift_after: dict[int, float]
     out_of_band: list[int]            # asset classes still outside the band after trading
-    realized_gain: float
+    realized_gain: float                  # net (gains minus losses)
+    realized_loss: float                  # capital losses realised (positive $)
     taxable_sells: int
     cash_left: dict[int, float]
     notes: list[str]
@@ -262,8 +273,9 @@ def solve(p: Problem) -> Result:
 
     # Upper bound on what an account can buy: its cash plus what it may sell.
     capacity = {a.id: a.cash for a in p.accounts}
-    for (a_id, s_id), (q, _) in held.items():
-        if not acc[a_id].taxable or p.allow_taxable_sells:
+    for (a_id, s_id), (q, bv) in held.items():
+        at_loss = bv is not None and q * sec[s_id].price < bv and not sec[s_id].managed
+        if not acc[a_id].taxable or p.allow_taxable_sells or (p.allow_loss_sells and at_loss):
             capacity[a_id] += q * sec[s_id].price
 
     # ---- decision variables per (account, security) pair --------------- #
@@ -298,7 +310,11 @@ def solve(p: Problem) -> Result:
             else:
                 gain_ps = s.price - bv / q_held
         is_loss = a.taxable and q_held > 0 and bv is not None and gain_ps < 0
-        can_sell = q_held > 0 and s.sellable and (not a.taxable or p.allow_taxable_sells)
+        # A provider-managed sleeve's book value goes stale (its tax-loss harvesting lowers it),
+        # so an apparent loss there may be a gain: it never counts as a loss sale.
+        loss_ps = -gain_ps if is_loss and not s.managed else 0.0
+        can_sell = q_held > 0 and s.sellable and (not a.taxable or p.allow_taxable_sells
+                                                   or (p.allow_loss_sells and loss_ps > 0))
         if is_loss and sl_applies and s_id in p.recent_buys:
             can_sell = False   # loss would be superficial
             notes.append(f"{s.ticker} in {a.name}: sale at a loss blocked – bought within the last 30 days.")
@@ -308,7 +324,7 @@ def solve(p: Problem) -> Result:
         if phasing_out:
             sell_cost -= W.migrate * s.price
 
-        i = dict(acct=a, sec=s, held=q_held, gain_ps=gain_ps,
+        i = dict(acct=a, sec=s, held=q_held, gain_ps=gain_ps, loss_ps=loss_ps,
                  is_loss=is_loss, level=level or 0)
         i["b"] = V.add(0, max_buy, cost=s.price * (W.priority * (level or 0) - W.idle_cash + W.turnover))
         i["s"] = V.add(0, q_held if can_sell else 0, cost=sell_cost)
@@ -418,6 +434,7 @@ def solve(p: Problem) -> Result:
     # that need no trades are left alone.
     tickets = [v for i in pairs for v in (i["yb"], i["ys"])]
     n_trades = int(round(sum(res.x[v] for v in tickets)))
+    costs_used = V.c
     if p.aim_for_target and n_trades > 0:
         gain_coef = {i["s"]: W.gain * max(i["gain_ps"], 0.0) for i in pairs
                      if i["acct"].taxable and i["gain_ps"] > 0}
@@ -433,9 +450,17 @@ def solve(p: Problem) -> Result:
             rows2.append(gain_coef); lo2.append(-np.inf); hi2.append(stage1_gain + 1.0)
         res2 = run(costs2, rows2, lo2, hi2)
         if res2.x is not None:
-            res = res2
+            res, costs_used = res2, costs2
         else:
             log.warning("Stage-2 (aim for target) solve failed: %s – keeping stage-1 plan", res2.message)
+
+    # Stage 3: same plan shape, but sell taxable losers where that's possible.
+    loss_pairs = [i for i in pairs if i["loss_ps"] > 0 and V.ub[i["s"]] > 0]
+    if p.prefer_loss_sales and loss_pairs and n_trades > 0:
+        res3 = _prefer_losses(p, W, V, pairs, cls_vars, loss_pairs, tickets, rows, lo, hi, costs_used,
+                              res.x, total, run)
+        if res3 is not None:
+            res = res3
     if res.status != 0:
         notes.append("Optimiser hit its time limit – plan is good but may not be optimal.")
     x = res.x
@@ -499,6 +524,18 @@ def solve(p: Problem) -> Result:
                              "(planned at spot rate).")
 
     notes += _migration_notes(p, acc, sec, held, trades, forced_switch)
+    loss_sells = [t for t in trades if t.action == "SELL" and (t.realized_gain or 0) < -0.5]
+    if loss_sells:
+        what = ", ".join(sorted({f"{sec[t.security_id].ticker} in {acc[t.account_id].name}" for t in loss_sells}))
+        lost = -sum(t.realized_gain for t in loss_sells)
+        bought = {sec[t.security_id].sl_key for t in trades if t.action == "BUY"}
+        notes.append(f"Sells at a loss in a taxable account ({what}): about "
+                     f"{fmt_money(lost, None, p.base_currency, 0)} of capital losses to offset gains this year, the "
+                     "previous three, or later. Don't buy these – or a fund on the same index – in any account, "
+                     "yours or your spouse's, for 30 days, including through dividend reinvestment (DRIP); "
+                     "a buy in an RRSP or TFSA loses the deduction for good.")
+        if any(sec[t.security_id].sl_key in bought for t in loss_sells):   # pragma: no cover – blocked above
+            notes.append("Warning: this plan also buys a security sold at a loss – check the superficial-loss rule.")
 
     drift_after = {k: (after[k] - target_val[k]) / total * 100 for k in p.targets}
     out = [k for k, d in drift_after.items() if abs(d) > p.threshold_pp + 1e-6]
@@ -509,9 +546,53 @@ def solve(p: Problem) -> Result:
         trades=trades, total_value=total,
         effective_targets=eff, redemptions=redemptions, drift_before=drift_before, drift_after=drift_after, out_of_band=out,
         realized_gain=sum(t.realized_gain or 0 for t in sells_tax),
+        realized_loss=-sum(min(t.realized_gain or 0, 0) for t in sells_tax),
         taxable_sells=len(sells_tax), cash_left=cash_left, notes=_dedupe(notes),
         objective=float(res.fun) - _GAP_ANCHOR,
     )
+
+
+def _prefer_losses(p, W, V, pairs, cls_vars, loss_pairs, tickets, rows, lo, hi, costs, x, total, run):
+    """Stage 3. Freeze the plan's shape – no more trades, no more realised gain, each asset
+    class ending within a few dollars of where *x* put it – and reward capital losses
+    realised in taxable accounts, so the plan sells a taxable loser instead of a registered
+    holding when either would do. Returns the new result, or None to keep *x*.
+
+    A loss sale the earlier stages didn't choose is never paired with a buy of another
+    security in the same asset class: the two could be identical property (two funds on
+    the same index), which would make the loss superficial."""
+    rows3, lo3, hi3 = list(rows), list(lo), list(hi)
+    n = int(round(sum(x[v] for v in tickets)))
+    rows3.append({v: 1 for v in tickets}); lo3.append(-np.inf); hi3.append(n)
+    gain_coef = {i["s"]: max(i["gain_ps"], 0.0) for i in pairs if i["acct"].taxable and i["gain_ps"] > 0}
+    if gain_coef:
+        rows3.append(gain_coef); lo3.append(-np.inf); hi3.append(sum(x[v] * c for v, c in gain_coef.items()) + 1.0)
+    tol = max(5.0, total * 1e-5)
+    for k in cls_vars:
+        coefs = {}
+        for i in pairs:
+            if i["sec"].asset_class_id == k:
+                coefs[i["b"]] = i["sec"].price
+                coefs[i["s"]] = -i["sec"].price
+        if coefs:
+            net = sum(x[v] * c for v, c in coefs.items())
+            rows3.append(coefs); lo3.append(net - tol); hi3.append(net + tol)
+    for i in loss_pairs:
+        if x[i["s"]] > 1e-6:
+            continue
+        for j in pairs:
+            if (j["sec"].asset_class_id == i["sec"].asset_class_id and j["sec"].sl_key != i["sec"].sl_key
+                    and V.ub[j["yb"]] > 0):
+                rows3.append({i["ys"]: 1, j["yb"]: 1}); lo3.append(-np.inf); hi3.append(1)
+    costs3 = list(costs)
+    for i in loss_pairs:
+        costs3[i["s"]] -= W.loss * i["loss_ps"]
+    res3 = run(costs3, rows3, lo3, hi3)
+    if res3.x is None:
+        log.warning("Stage-3 (prefer losses) solve failed: %s – keeping the earlier plan", res3.message)
+        return None
+    realised = lambda sol: sum(sol[i["s"]] * i["loss_ps"] for i in loss_pairs)
+    return res3 if realised(res3.x) > realised(x) + 1.0 else None
 
 
 def _buy_candidates(p: Problem, acc, sec, held) -> set:

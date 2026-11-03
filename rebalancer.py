@@ -9,7 +9,8 @@ The maths lives in services/optimizer.py (pure, unit-tested).  This module:
   4. returns a JSON-serialisable summary for the Rebalance page.
 
 Taxable-sell modes (Portfolio.taxable_sell_mode):
-  never – sells only happen in registered accounts
+  never – sells only happen in registered accounts (plus, with Portfolio.allow_loss_sells,
+          taxable holdings at a loss – they realise no gain)
   allow – taxable sells are allowed (still minimised via realised-gain cost)
   ask   – plan WITHOUT taxable sells; if some asset class is still outside its
           band, also solve WITH them and offer that plan (gain realised, trades,
@@ -142,6 +143,7 @@ def build_problem(portfolio, exchange_rates, allow_taxable_sells: bool) -> tuple
         threshold_pp=portfolio.balanced_threshold if portfolio.balanced_threshold is not None else 0.5,
         trade_cost=portfolio.trade_cost or 0.0,
         allow_taxable_sells=allow_taxable_sells,
+        allow_loss_sells=portfolio.allow_loss_sells is not False,
         recent_buys=recent_buys,
         recent_loss_sells=recent_loss_sells,
         fractional_final=bool(portfolio.precision_rebalancing),
@@ -354,6 +356,7 @@ def _summarise(result, problem) -> dict:
         "trades": len(result.trades),
         "taxable_sells": result.taxable_sells,
         "realized_gain": round(result.realized_gain, 2),
+        "realized_loss": round(getattr(result, "realized_loss", 0.0), 2),
         "notes": result.notes,
         "status": result.status,
         "max_out_of_band": round(result.max_out_of_band, 2),

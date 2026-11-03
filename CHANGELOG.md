@@ -7,6 +7,17 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 ## [Unreleased]
 
 ### Added
+- **Prefer selling at a loss in non-registered accounts.** When something has to be sold, the plan now prefers a
+  non-registered holding at a loss over a registered one (a loss in an RRSP/TFSA has no tax value). A third optimiser
+  pass keeps the plan's shape – same number of trades, no more realised gain, each asset class ending in the same
+  place – and only changes who sells, so it never adds trades. Loss sales are listed in the plan notes with a 30-day
+  superficial-loss reminder (any account, spouse's included, DRIPs included); the summary shows losses netted
+  against gains. Holdings without a book value and provider-managed ones never count as at a loss.
+- **Setting: "Sell non-registered holdings at a loss without asking"** (on by default) lets *Never* and *Ask* modes
+  sell a taxable holding that's at a loss, since it realises no gain. Turn it off to keep those modes out of
+  non-registered accounts entirely. New column added on startup.
+
+### Added
 - **Phase-out by account preferences.** On Edit security, *Replace with → By account preferences (automatic)*
   replaces the old security, in each account, with the security of its asset class that the account preferences
   favour there (e.g. Canadian bonds: B restricted to the RRSP, C prioritized for the non-registered account → B in

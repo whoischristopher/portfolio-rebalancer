@@ -147,7 +147,7 @@
     </table>
     <p style="margin-top: 0.75rem; color: var(--muted); font-size: 0.9rem;">
         {{ plan.trades }} trade(s) &middot; {{ plan.taxable_sells }} non-registered sell(s)
-        {% if plan.taxable_sells %}&middot; est. realised {{ 'gain' if plan.realized_gain >= 0 else 'loss' }} {{ (plan.realized_gain|abs)|money(none, 0) }}{% endif %}
+        {% if plan.taxable_sells %}&middot; est. realised {{ 'gain' if plan.realized_gain >= 0 else 'loss' }} {{ (plan.realized_gain|abs)|money(none, 0) }}{% if plan.realized_loss and plan.realized_gain > 0 %} (after {{ plan.realized_loss|money(none, 0) }} of losses){% endif %}{% endif %}
         &middot; mode: {{ plan.mode }}{% if plan.status != 'optimal' %} &middot; <span style="color:var(--warn)">solver time limit reached</span>{% endif %}
     </p>
     {% if plan.notes %}

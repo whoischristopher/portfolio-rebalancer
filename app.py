@@ -1603,6 +1603,7 @@ def update_settings():
     P.balanced_threshold, P.trade_cost = threshold, trade_cost
     mode = request.form.get('taxable_sell_mode', 'ask')
     P.taxable_sell_mode = mode if mode in ('never', 'ask', 'allow') else 'ask'
+    P.allow_loss_sells = request.form.get('allow_loss_sells') == 'on'
     P.sl_link_portfolio_id = link
     price_sheet_id = request.form.get('price_sheet_id', '').strip()
     if price_sheet_id and price_sheet_id != current_user.price_sheet_id:
