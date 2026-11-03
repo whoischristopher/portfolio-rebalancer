@@ -862,9 +862,18 @@ def edit_security(security_id):
         if not ticker or _ticker_taken(security.portfolio_id, ticker, exclude_id=security.id):
             flash(f'{ticker or "Ticker"} is missing or already in this portfolio.', 'error')
             return redirect(url_for('edit_security', security_id=security.id))
+        new_class = _asset_class_from_form() or security.asset_class_id
+        replacement, problem = _migration_from_form(security, new_class)
+        if problem:
+            db.session.rollback()          # the asset-class lookup may have created a class
+            flash(problem, 'error')
+            return redirect(url_for('edit_security', security_id=security.id))
         security.ticker = ticker
         security.name = request.form.get('name')
-        security.asset_class_id = _asset_class_from_form() or security.asset_class_id
+        security.asset_class_id = new_class
+        security.replaced_by_id = replacement.id if replacement else None
+        security.migrate_registered_now = bool(replacement) and request.form.get('migrate_registered_now') == 'on'
+        security.migration_sl_link = request.form.get('migration_sl_link') == 'on' if replacement else True
         security.currency = request.form.get('currency', 'CAD')
         security.auto_update_price = request.form.get('auto_update_price') == 'on'
         security.is_illiquid = request.form.get('is_illiquid') == 'on'
@@ -878,13 +887,44 @@ def edit_security(security_id):
         'edit_security.html',
         security=security,
         asset_classes=_p_asset_classes(),
+        replacement_options=[s for s in _p_securities()
+                             if s.id != security.id and s.asset_class_id == security.asset_class_id
+                             and not s.replaced_by_id],
     )
+
+
+def _migration_from_form(security, asset_class_id):
+    """(replacement Security or None, error message or None) from the edit form's
+    "phase out in favour of" field. The replacement must be another security of the same
+    portfolio and asset class that isn't itself being phased out (no chains)."""
+    raw = (request.form.get('replaced_by_id') or '').strip()
+    predecessors = [s for s in security.replacing if s.id != security.id]
+    if any(s.asset_class_id != asset_class_id for s in predecessors):
+        return None, (f'{security.ticker} is the replacement for '
+                      + ', '.join(s.ticker for s in predecessors)
+                      + ' – a replacement has to stay in the same asset class.')
+    if not raw:
+        return None, None
+    new = _get(Security, raw)
+    if new.id == security.id:
+        return None, 'A security can\'t replace itself.'
+    if new.asset_class_id != asset_class_id:
+        return None, (f'{new.ticker} is in {new.asset_class.name if new.asset_class else "another asset class"}. '
+                      'Phase out into a security of the same asset class – to move money between asset '
+                      'classes, change the targets instead.')
+    if new.replaced_by_id:
+        return None, f'{new.ticker} is itself being phased out – pick the security it is moving to.'
+    if predecessors:
+        return None, (f'{security.ticker} is the replacement for ' + ', '.join(s.ticker for s in predecessors)
+                      + '. Point those at the new security first.')
+    return new, None
 
 
 @app.route('/securities/<int:security_id>/delete', methods=['POST'])
 @login_required
 def delete_security(security_id):
     s = _get(Security, security_id)
+    Security.query.filter_by(replaced_by_id=s.id).update({'replaced_by_id': None})   # ends those migrations
     RebalanceTransaction.query.filter_by(security_id=s.id, executed=False).delete()
     PendingRedemption.query.filter_by(security_id=s.id).delete()
     db.session.delete(s)
@@ -1457,11 +1497,18 @@ def _copy_setup(src, dst):
         ac_map[ac.id] = AssetClass(portfolio_id=dst.id, name=ac.name)
         db.session.add(ac_map[ac.id])
     db.session.flush()
+    sec_map = {}
     for sec in src.securities:
-        db.session.add(Security(
+        sec_map[sec.id] = Security(
             portfolio_id=dst.id, ticker=sec.ticker, name=sec.name, asset_class_id=ac_map[sec.asset_class_id].id,
             currency=sec.currency, auto_update_price=sec.auto_update_price,
-            is_illiquid=sec.is_illiquid, is_managed=sec.is_managed, last_price=sec.last_price))
+            is_illiquid=sec.is_illiquid, is_managed=sec.is_managed, last_price=sec.last_price,
+            migrate_registered_now=sec.migrate_registered_now, migration_sl_link=sec.migration_sl_link)
+        db.session.add(sec_map[sec.id])
+    db.session.flush()
+    for sec in src.securities:          # migrations point at the copies, never across portfolios
+        if sec.replaced_by_id in sec_map:
+            sec_map[sec.id].replaced_by_id = sec_map[sec.replaced_by_id].id
     for t in src.targets:
         db.session.add(Target(user_id=dst.user_id, portfolio_id=dst.id,
                               asset_class_id=ac_map[t.asset_class_id].id, target_percentage=t.target_percentage))
