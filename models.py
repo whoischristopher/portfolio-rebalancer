@@ -327,6 +327,10 @@ class Security(db.Model):
     # migration_sl_link: treat it and its replacements as identical property for the
     # superficial-loss rule (the conservative default).
     replaced_by_id = db.Column(db.Integer, db.ForeignKey('securities.id'), nullable=True)
+    # Automatic default: in each account, the replacement is the security of the same asset
+    # class that the account preferences (Restricted / Prioritized) favour there – see
+    # rebalancer.replacement_map(). Per-account overrides still win.
+    phase_out_auto = db.Column(db.Boolean, default=False)
     migrate_registered_now = db.Column(db.Boolean, default=False)
     migration_sl_link = db.Column(db.Boolean, default=True)
 
@@ -342,16 +346,21 @@ class Security(db.Model):
     account_replacements = db.relationship('SecurityReplacement', foreign_keys='SecurityReplacement.security_id',
                                            back_populates='security', cascade='all, delete-orphan')
 
+    def override_for(self, account_id):
+        """This account's own choice: a SecurityReplacement row (replacement None = keep), or None."""
+        return next((r for r in self.account_replacements if r.account_id == account_id), None)
+
     def replacement_for(self, account_id):
-        """The security that replaces this one in that account, or None (not phased out there)."""
-        for r in self.account_replacements:
-            if r.account_id == account_id:
-                return r.replacement
-        return self.replaced_by
+        """The explicitly chosen replacement in that account (override, else the fixed default),
+        or None. With phase_out_auto the default comes from the account preferences instead –
+        use rebalancer.replacement_map() for the full picture."""
+        r = self.override_for(account_id)
+        return r.replacement if r else self.replaced_by
 
     @property
     def is_phasing_out(self):
-        return bool(self.replaced_by_id) or any(r.replacement_id for r in self.account_replacements)
+        return (bool(self.replaced_by_id) or bool(self.phase_out_auto)
+                or any(r.replacement_id for r in self.account_replacements))
 
     @property
     def replacement_securities(self):

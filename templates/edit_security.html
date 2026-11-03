@@ -52,20 +52,34 @@
                 <label for="replaced_by_id">Replace {{ security.ticker }} with</label>
                 <select name="replaced_by_id" id="replaced_by_id" data-migration-select>
                     <option value="">– no default (only the accounts set below) –</option>
+                    <option value="auto" {% if security.phase_out_auto %}selected{% endif %}>By account preferences (automatic)</option>
                     {% for s in replacement_options %}
                     <option value="{{ s.id }}" {% if s.id == security.replaced_by_id %}selected{% endif %}>{{ s.ticker }}{% if s.name %} – {{ s.name }}{% endif %}</option>
                     {% endfor %}
                 </select>
-                <small class="help">The default for every account. Leave it empty and set no accounts below to keep {{ security.ticker }}.</small>
+                <small class="help"><strong>Automatic</strong> uses, in each account, the {{ security.asset_class.name if security.asset_class else '' }}
+                    security your account preferences favour there (Securities → Restricted / Prioritized) – e.g. one fund
+                    restricted to the RRSP, another prioritized for the non-registered account. Or pick one security for
+                    every account. Leave it empty and set no accounts below to keep {{ security.ticker }}.</small>
+                {% if accounts %}
+                <table class="per-account-table auto-preview" data-auto-preview>
+                    <thead><tr><th>Automatic would use</th><th></th></tr></thead>
+                    <tbody>
+                    {% for a in accounts %}
+                    <tr><td>{{ a.name }}</td><td>{% if auto_preview.get(a.id) %}<strong>{{ auto_preview[a.id] }}</strong>{% else %}<span class="muted">nothing allowed – keeps {{ security.ticker }}</span>{% endif %}</td></tr>
+                    {% endfor %}
+                    </tbody>
+                </table>
+                {% endif %}
                 {% if not replacement_options %}<small class="help">Add the new security to {{ security.asset_class.name if security.asset_class else 'this asset class' }} first (Securities → Add).</small>{% endif %}
                 {% if security.replacing %}<small class="help">{{ security.ticker }} is the replacement for {{ security.replacing|map(attribute='ticker')|join(', ') }}.</small>{% endif %}
             </div>
 
             {% if accounts and replacement_options %}
             <details class="per-account" {% if overrides %}open{% endif %}>
-                <summary>Different replacement in some accounts{% if overrides %} ({{ overrides|length }} set){% endif %}</summary>
-                <p class="help">E.g. a US-listed fund in the RRSP (no US withholding tax there) and a Canadian-listed one elsewhere.
-                    The replacement must be allowed in that account under its restrictions.</p>
+                <summary>Exceptions for some accounts{% if overrides %} ({{ overrides|length }} set){% endif %}</summary>
+                <p class="help">Override the default in an account – a specific replacement, or keep {{ security.ticker }} there.
+                    A replacement must be allowed in that account under its restrictions.</p>
                 <table class="per-account-table">
                     <tbody>
                     {% for a in accounts %}
@@ -75,7 +89,7 @@
                         <td><strong>{{ a.name }}</strong><span class="sub">{{ a.account_type or ('registered' if a.is_registered else 'taxable') }}{% if held %} · holds {{ security.ticker }}{% endif %}</span></td>
                         <td>
                             <select name="acct_repl_{{ a.id }}" aria-label="Replacement in {{ a.name }}" data-migration-select>
-                                <option value="" {% if cur == '' %}selected{% endif %}>Use the default</option>
+                                <option value="" {% if cur == '' %}selected{% endif %}>Use the default{% if resolved and cur == '' %} (now: {{ resolved[a.id][0].ticker if a.id in resolved and resolved[a.id][0] else 'keep ' ~ security.ticker }}){% endif %}</option>
                                 <option value="keep" {% if cur == 'keep' %}selected{% endif %}>Keep {{ security.ticker }} here</option>
                                 {% for s in replacement_options %}
                                 <option value="{{ s.id }}" {% if cur == s.id %}selected{% endif %}>{{ s.ticker }}</option>

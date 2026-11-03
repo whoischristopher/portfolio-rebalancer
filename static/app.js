@@ -159,7 +159,12 @@
   if (migSels.length) {
     const opts = document.querySelector('[data-migration-options]');
     const active = () => [...migSels].some((s) => s.value && s.value !== 'keep');
-    const sync = () => opts && opts.classList.toggle('hidden', !active());
+    const preview = document.querySelector('[data-auto-preview]');
+    const main = document.querySelector('#replaced_by_id');
+    const sync = () => {
+      if (opts) opts.classList.toggle('hidden', !active());
+      if (preview && main) preview.classList.toggle('hidden', main.value !== 'auto');
+    };
     migSels.forEach((s) => s.addEventListener('change', sync));
     sync();
   }

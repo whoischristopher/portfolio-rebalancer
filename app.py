@@ -854,9 +854,21 @@ def securities():
         .all()
     )
     prefs = SecurityPreference.query.filter_by(portfolio_id=P.id).all()
+    # Phase-outs: which securities each one is moving into, across accounts.
+    phase_targets = {}
+    phasing = [s for s in all_securities if s.is_phasing_out]
+    if phasing:
+        from rebalancer import _buy_levels, replacement_map
+        accounts = _p_accounts()
+        levels = _buy_levels(P, accounts, all_securities)
+        pref_map = {p.security_id: p for p in prefs}
+        for s in phasing:
+            m = replacement_map(P, s, accounts, all_securities, levels, pref_map)
+            phase_targets[s.id] = sorted({new.ticker for new, problem in m.values() if new and not problem})
     return render_template(
         'securities.html',
         securities=all_securities,
+        phase_targets=phase_targets,
         preferences={p.security_id: p for p in prefs},
         accounts=_p_accounts(),
         restriction_types=[
@@ -955,12 +967,15 @@ def edit_security(security_id):
         return redirect(url_for('securities'))
     overrides = {r.account_id: ('keep' if r.replacement_id is None else r.replacement_id)
                  for r in security.account_replacements}
+    accounts = _p_accounts()
     return render_template(
         'edit_security.html',
         security=security,
         asset_classes=_p_asset_classes(),
-        accounts=_p_accounts(),
+        accounts=accounts,
         overrides=overrides,
+        resolved=_replacement_preview(security, accounts) if security.is_phasing_out else {},
+        auto_preview=_auto_preview(security, accounts),
         replacement_options=[s for s in _p_securities()
                              if s.id != security.id and s.asset_class_id == security.asset_class_id
                              and not s.is_phasing_out],
@@ -1002,10 +1017,11 @@ def _migration_from_form(security, asset_class_id):
         cache[raw] = new
         return new
 
-    plan = {'default': None, 'accounts': {}}
+    plan = {'default': None, 'auto': False, 'accounts': {}}
     try:
         raw = (request.form.get('replaced_by_id') or '').strip()
-        plan['default'] = pick(raw) if raw else None
+        plan['auto'] = raw == 'auto'
+        plan['default'] = pick(raw) if raw and raw != 'auto' else None
         for acc in _p_accounts():
             raw = (request.form.get(f'acct_repl_{acc.id}') or '').strip()
             if raw == 'keep':
@@ -1014,7 +1030,7 @@ def _migration_from_form(security, asset_class_id):
                 plan['accounts'][acc.id] = pick(raw)
     except EntryError as exc:
         return None, str(exc)
-    if any(v != 'keep' for v in plan['accounts'].values()) or plan['default']:
+    if any(v != 'keep' for v in plan['accounts'].values()) or plan['default'] or plan['auto']:
         if predecessors:
             return None, (f'{security.ticker} is the replacement for ' + ', '.join(s.ticker for s in predecessors)
                           + '. Point those at the new security first.')
@@ -1025,12 +1041,13 @@ def _apply_migration_plan(security, plan):
     from models import SecurityReplacement
     default = plan['default']
     security.replaced_by_id = default.id if default else None
+    security.phase_out_auto = plan['auto']
     wanted = {}
     for acc_id, choice in plan['accounts'].items():
         rid = None if choice == 'keep' else choice.id
-        if rid == security.replaced_by_id:
-            continue                      # same as the default: no override needed
-        if choice == 'keep' and not default:
+        if default and rid == default.id:
+            continue                      # same as the fixed default: no override needed
+        if choice == 'keep' and not (default or plan['auto']):
             continue                      # nothing to keep it from
         wanted[acc_id] = rid
     existing = {r.account_id: r for r in security.account_replacements}
@@ -1054,17 +1071,30 @@ def _migration_warnings(security):
     phase-out pauses there, so say so now rather than only in the next plan."""
     if not security.is_phasing_out:
         return []
-    from rebalancer import _buy_levels
     accounts = _p_accounts()
-    reps = security.replacement_securities
-    levels = _buy_levels(current_portfolio(), accounts, reps)
     out = []
+    preview = _replacement_preview(security, accounts)
     for acc in accounts:
-        r = security.replacement_for(acc.id)
-        if r is not None and (acc.id, r.id) not in levels:
-            out.append(f'{r.ticker} is restricted from {acc.name}, so {security.ticker} won\'t be phased out there – '
-                       f'pick another replacement for {acc.name} or change {r.ticker}\'s restrictions.')
+        new, problem = preview.get(acc.id, (None, None))
+        if problem:
+            out.append(f'{security.ticker} won\'t be phased out in {acc.name}: {problem}. '
+                       + ('Set up a preference for that account on the Securities page, or pick a replacement '
+                          'for it.' if new is None else f'Pick another replacement for {acc.name} or change '
+                          f'{new.ticker}\'s restrictions.'))
     return out
+
+
+def _replacement_preview(security, accounts):
+    """{account_id: (replacement, problem)} for display – prices aren't checked here."""
+    from rebalancer import replacement_map
+    return replacement_map(current_portfolio(), security, accounts, _p_securities())
+
+
+def _auto_preview(security, accounts):
+    """What the automatic choice would pick per account: {account_id: ticker or None}."""
+    from rebalancer import replacement_map
+    m = replacement_map(current_portfolio(), security, accounts, _p_securities(), auto_only=True)
+    return {a.id: (m[a.id][0].ticker if a.id in m and m[a.id][0] else None) for a in accounts}
 
 
 @app.route('/securities/<int:security_id>/delete', methods=['POST'])

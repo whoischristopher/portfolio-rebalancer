@@ -99,7 +99,7 @@ def build_problem(portfolio, exchange_rates, allow_taxable_sells: bool) -> tuple
         notes.append("No price for " + ", ".join(sorted(unpriced)) +
                      " (not held and not in your price sheet) – they can't be bought this time.")
     levels = _buy_levels(portfolio, accounts, securities)
-    sl_groups = _apply_migrations(sec_in, securities, accounts, levels, notes)
+    sl_groups = _apply_migrations(portfolio, sec_in, securities, accounts, levels, notes)
 
     acc_in = [AccountIn(
         id=a.id, name=a.name, taxable=not a.is_registered, currency=a.currency or base,
@@ -150,15 +150,83 @@ def build_problem(portfolio, exchange_rates, allow_taxable_sells: bool) -> tuple
     return problem, notes
 
 
-def _apply_migrations(sec_in, securities, accounts, levels, notes) -> list[set]:
-    """Mark phased-out securities on the optimiser's inputs, account by account.
+def replacement_map(portfolio, security, accounts, securities, levels=None, prefs=None, priced_ids=None,
+                    auto_only=False) -> dict:
+    """Where *security* is being phased out, and into what: {account_id: (replacement, problem)}.
 
-    In each account the replacement is the account's override, else the default. It only
-    takes effect when that replacement can be bought there this time (priced, same
-    targeted asset class, allowed in that account); otherwise the old security is treated
-    normally in that account and a note says why.
+    Per account: its own override wins (replacement None = keep it there); otherwise the
+    fixed default (replaced_by); otherwise, with phase_out_auto, the security of the same
+    asset class the account preferences favour in that account:
+      lowest priority level there (Restricted-to → 0, Prioritized P1/P2/P3 → 0/1/2,
+      unlisted → 3, no preference → 0), then one whose preference names this account
+      (more specific than "unrestricted"), then the most already held in that account,
+      then in the portfolio, then by ticker.
+    *problem* says why an explicit choice can't be used this time (unpriced, other class,
+    restricted there) or that automatic found nothing; accounts not phased out are left out.
+    priced_ids, if given, limits replacements to securities that can be bought this time.
+    auto_only: ignore the saved choices and show what the automatic choice would pick."""
+    if levels is None:
+        levels = _buy_levels(portfolio, accounts, securities)
+    if prefs is None:
+        prefs = {p.security_id: p for p in SecurityPreference.query.filter_by(portfolio_id=portfolio.id).all()}
+    held_in: dict[tuple[int, int], float] = {}
+    held_all: dict[int, float] = {}
+    for acc in accounts:
+        for h in acc.holdings:
+            v = h.quantity * (h.security.last_price or h.price or 0.0)
+            held_in[(acc.id, h.security_id)] = held_in.get((acc.id, h.security_id), 0.0) + v
+            held_all[h.security_id] = held_all.get(h.security_id, 0.0) + v
+    klass = security.asset_class.name if security.asset_class else "asset class"
+
+    def names_account(sec, acc_id):
+        pref = prefs.get(sec.id)
+        if not pref:
+            return False
+        cfg = pref.account_config or {}
+        if pref.restriction_type == "restricted_to_accounts":
+            return acc_id in cfg.get("allowed", [])
+        if pref.restriction_type == "prioritized_accounts":
+            return any(acc_id in cfg.get(f"priority_{n}", []) for n in (1, 2, 3))
+        return False
+
+    out = {}
+    for acc in accounts:
+        ov = None if auto_only else security.override_for(acc.id)
+        if not auto_only and (ov is not None or security.replaced_by_id):
+            new = ov.replacement if ov is not None else security.replaced_by
+            if new is None:
+                continue                                            # kept in this account
+            problem = None
+            if new.asset_class_id != security.asset_class_id:
+                problem = f"{new.ticker} isn't in the same asset class"
+            elif priced_ids is not None and new.id not in priced_ids:
+                problem = f"{new.ticker} has no price"
+            elif (acc.id, new.id) not in levels:
+                problem = f"{new.ticker} isn't allowed there (Securities → restrictions)"
+            out[acc.id] = (new, problem)
+        elif auto_only or security.phase_out_auto:
+            cands = [s for s in securities
+                     if s.id != security.id and s.asset_class_id == security.asset_class_id
+                     and not s.is_phasing_out and (acc.id, s.id) in levels
+                     and (priced_ids is None or s.id in priced_ids)]
+            if not cands:
+                out[acc.id] = (None, f"no other {klass} security can be bought there")
+                continue
+            best = min(cands, key=lambda s: (levels[(acc.id, s.id)], 0 if names_account(s, acc.id) else 1,
+                                             -held_in.get((acc.id, s.id), 0.0), -held_all.get(s.id, 0.0),
+                                             s.ticker))
+            out[acc.id] = (best, None)
+    return out
+
+
+def _apply_migrations(portfolio, sec_in, securities, accounts, levels, notes) -> list[set]:
+    """Mark phased-out securities on the optimiser's inputs, account by account (see
+    replacement_map). An account whose replacement can't be used this time is paused:
+    the old security is treated normally there and a note says why.
     Returns groups of security ids to treat as identical for the superficial-loss rule."""
     by_id = {s.id: s for s in sec_in}
+    prefs = {p.security_id: p for p in SecurityPreference.query.filter_by(portfolio_id=portfolio.id).all()}
+    acc_name = {a.id: a.name for a in accounts}
     parent: dict[int, int] = {}
 
     def find(x):
@@ -176,29 +244,21 @@ def _apply_migrations(sec_in, securities, accounts, levels, notes) -> list[set]:
             continue
         old = by_id[sec.id]
         paused: dict[str, list[str]] = {}          # reason → account names
-        for acc in accounts:
-            new_row = sec.replacement_for(acc.id)
-            if new_row is None:
+        for acc_id, (new, problem) in replacement_map(portfolio, sec, accounts, securities, levels, prefs,
+                                                      priced_ids=set(by_id)).items():
+            if problem:
+                paused.setdefault(problem, []).append(acc_name[acc_id])
                 continue
-            new = by_id.get(new_row.id)
-            if new is None or new.asset_class_id != old.asset_class_id:
-                reason = ("has no price" if new_row.asset_class_id == sec.asset_class_id
-                          else "isn't in the same asset class")
-            elif (acc.id, new.id) not in levels:
-                reason = "isn't allowed there (Securities → restrictions)"
-            else:
-                old.replaced_in[acc.id] = new.id
-                if sec.migration_sl_link is not False:
-                    union(old.id, new.id)
-                continue
-            paused.setdefault(f"{new_row.ticker} {reason}", []).append(acc.name)
+            old.replaced_in[acc_id] = new.id
+            if sec.migration_sl_link is not False:
+                union(old.id, new.id)
         for reason, names in sorted(paused.items()):
             notes.append(f"Phasing out {sec.ticker} is paused in {', '.join(sorted(names))}: {reason}, so "
                          f"{sec.ticker} is treated as a normal holding there this time.")
         old.switch_registered_now = bool(sec.migrate_registered_now)
 
     groups: dict[int, set] = {}
-    for x in list(parent) + [v for v in parent.values()]:
+    for x in list(parent) + list(parent.values()):
         groups.setdefault(find(x), set()).add(x)
     for root, members in groups.items():
         for m in members:

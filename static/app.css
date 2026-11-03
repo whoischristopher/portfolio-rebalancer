@@ -416,3 +416,5 @@ fieldset.migration details.per-account summary { cursor: pointer; font-weight: 5
 fieldset.migration .per-account-table { margin-top: 0.5rem; }
 fieldset.migration .per-account-table td { vertical-align: middle; }
 fieldset.migration .per-account-table select { min-width: 12rem; }
+fieldset.migration .auto-preview { max-width: 26rem; margin: 0.6rem 0 0.25rem; }
+fieldset.migration .auto-preview th { font-weight: 500; }

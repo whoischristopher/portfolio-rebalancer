@@ -280,3 +280,64 @@ def test_replacement_cannot_itself_be_phased_out(mig):
     with app.app_context():
         assert db.session.get(Security, ids["new"]).replaced_by_id is None
         assert not db.session.get(Security, alt).account_replacements
+
+
+def _pref(app, db, ids, sec_id, rtype, cfg):
+    from models import SecurityPreference
+    with app.app_context():
+        db.session.add(SecurityPreference(user_id=ids["user"], portfolio_id=ids["p"], security_id=sec_id,
+                                          restriction_type=rtype, account_config=cfg))
+        db.session.commit()
+
+
+def test_automatic_replacement_follows_account_preferences(mig):
+    """The example: B is restricted to the registered account, C is prioritized for the
+    non-registered one → OLD is replaced by B in the TFSA and by C in Joint."""
+    app, db, c, ids = mig
+    from models import Portfolio, Security
+    from rebalancer import build_problem
+    from services.fx import get_exchange_rates
+    with app.app_context():
+        b = Security(portfolio_id=ids["p"], ticker="BBB", asset_class_id=ids["eq"], currency="CAD", last_price=20.0)
+        cc = Security(portfolio_id=ids["p"], ticker="CCC", asset_class_id=ids["eq"], currency="CAD", last_price=25.0)
+        db.session.add_all([b, cc]); db.session.commit()
+        b_id, c_id = b.id, cc.id
+    _pref(app, db, ids, b_id, "restricted_to_accounts", {"allowed": [ids["tfsa"]]})
+    _pref(app, db, ids, c_id, "prioritized_accounts", {"priority_1": [ids["nr"]]})
+    # NEW (no preference) would be allowed everywhere at level 0 – but BBB names the TFSA, so it wins there;
+    # in Joint, CCC (P1) and NEW (no preference) are both level 0 and CCC names Joint.
+    page = c.get(f"/securities/{ids['old']}/edit").get_data(as_text=True)
+    assert "By account preferences (automatic)" in page and "BBB" in page and "CCC" in page
+    _edit(c, ids["old"], "OLD", "Equity", replaced_by_id="auto", migrate_registered_now="on", migration_sl_link="on")
+    with app.app_context():
+        o = db.session.get(Security, ids["old"])
+        assert o.phase_out_auto and o.replaced_by_id is None and o.is_phasing_out
+        p = db.session.get(Portfolio, ids["p"])
+        prob, notes = build_problem(p, get_exchange_rates(p), allow_taxable_sells=True)
+        old_in = next(s for s in prob.securities if s.id == ids["old"])
+        assert old_in.replaced_in == {ids["tfsa"]: b_id, ids["nr"]: c_id}
+        assert {s.id for s in prob.securities if s.sl_group == ids["old"]} == {ids["old"], b_id, c_id}
+    assert "phasing out → BBB, CCC" in c.get("/securities").get_data(as_text=True)
+    c.post("/rebalance/generate")
+    plan = _plan(app, ids)
+    assert (ids["tfsa"], "SELL", ids["old"], 200) in plan
+    assert any(a == ids["tfsa"] and act == "BUY" and s == b_id for a, act, s, _ in plan)
+    assert not [t for t in plan if t[0] == ids["nr"]]                  # taxable: gradual
+    # An exception still wins over automatic: keep OLD in Joint.
+    _edit(c, ids["old"], "OLD", "Equity", replaced_by_id="auto", **{f"acct_repl_{ids['nr']}": "keep"})
+    with app.app_context():
+        p = db.session.get(Portfolio, ids["p"])
+        prob, _ = build_problem(p, get_exchange_rates(p), allow_taxable_sells=True)
+        assert next(s for s in prob.securities if s.id == ids["old"]).replaced_in == {ids["tfsa"]: b_id}
+
+
+def test_automatic_with_nothing_allowed_pauses_and_warns(mig):
+    app, db, c, ids = mig
+    from models import Security
+    # NEW is the only other Equity security and it's restricted to Joint.
+    _pref(app, db, ids, ids["new"], "restricted_to_accounts", {"allowed": [ids["nr"]]})
+    _edit(c, ids["old"], "OLD", "Equity", replaced_by_id="auto")
+    page = c.get("/securities").get_data(as_text=True)
+    assert "be phased out in TFSA" in page and "no other Equity security" in page
+    c.post("/rebalance/generate")
+    assert "Phasing out OLD is paused in TFSA" in c.get("/rebalance").get_data(as_text=True)

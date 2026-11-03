@@ -27,7 +27,7 @@
             {% for s in securities %}
             <tr>
                 <td><strong>{{ s.ticker }}</strong>{% if s.is_illiquid %} <span class="badge badge-illiquid" title="Can't be sold on demand – the rebalancer never sells it">illiquid</span>{% endif %}
-                    {% if s.is_phasing_out %}<span class="badge badge-warn" title="Being phased out: never bought, sold first when that's no worse for tax">phasing out → {{ s.replacement_securities|map(attribute='ticker')|join(', ') }}</span>{% endif %}</td>
+                    {% if s.is_phasing_out %}<span class="badge badge-warn" title="Being phased out: never bought, sold first when that's no worse for tax">phasing out → {{ (phase_targets.get(s.id) or ['nothing yet'])|join(', ') }}</span>{% endif %}</td>
                 <td>{{ s.name }}</td>
                 <td>{{ s.asset_class.name if s.asset_class else '-' }}</td>
                 <td>{{ s.currency }}</td>
