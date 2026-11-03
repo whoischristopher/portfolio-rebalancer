@@ -7,6 +7,13 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 ## [Unreleased]
 
 ### Added
+- **Phase-out: a different replacement per account.** On Edit security, *Different replacement in some accounts*
+  sets, per account, another replacement or *Keep* the old security there; the existing replacement becomes the
+  default for the other accounts (and can be left empty to phase out only in chosen accounts). The plan uses each
+  account's replacement for new money and for *switch registered accounts now*, and pauses an account – with a note,
+  and a warning when saving – when its replacement has no price or is restricted from it. The superficial-loss link
+  covers the old security and every replacement in use. Existing phase-outs carry on unchanged; a new
+  `security_replacements` table is created on startup.
 - **Quick start, step 2: "Securities to buy".** Add a security you don't hold yet – e.g. the fund for a new asset
   class – without creating a holding, so the rebalancer has something to buy. Lists the portfolio's unheld
   securities. Blank fields are copied from the same ticker in your other portfolios, then from the price sheet.

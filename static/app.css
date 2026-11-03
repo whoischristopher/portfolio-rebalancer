@@ -411,3 +411,8 @@ dialog.modal [data-exec-form] label input { width: 100%; }
 fieldset.migration { border: 1px solid var(--line); border-radius: 10px; padding: 1rem 1.25rem 1.1rem; margin: 0 0 1.5rem; }
 fieldset.migration legend { padding: 0 0.4rem; font-weight: 600; color: var(--ink); }
 fieldset.migration .help { display: block; }
+fieldset.migration details.per-account { margin: 0.25rem 0 1rem; }
+fieldset.migration details.per-account summary { cursor: pointer; font-weight: 500; color: var(--ink-2); }
+fieldset.migration .per-account-table { margin-top: 0.5rem; }
+fieldset.migration .per-account-table td { vertical-align: middle; }
+fieldset.migration .per-account-table select { min-width: 12rem; }

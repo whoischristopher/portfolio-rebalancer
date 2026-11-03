@@ -85,8 +85,14 @@ Securities and Targets can be edited on their own pages.
   - **Treat as identical for the superficial-loss rule** (default on): two funds tracking the same index may be
     identical property, so a loss sale of one and a purchase of the other within 30 days are kept apart, and recent
     trades of either count for both. Untick only if you're sure they aren't (check with a tax professional).
-  - Each plan says how much was moved and what's left, split registered/taxable. A migration pauses (with a note) if
-    the replacement has no price. Deleting the replacement ends the migration.
+  - **Different replacement per account** (optional): e.g. a US-listed fund in the RRSP and a Canadian-listed one
+    elsewhere, or *Keep* it in one account. The replacement set as the default applies to every account without its
+    own choice; with no default, only the accounts you set are phased out. Each account's replacement must be allowed
+    there under its restrictions – if it isn't, that account is paused (you're warned on save and in the plan).
+  - Each plan says how much was moved and what's left, split registered/taxable. A migration pauses in an account
+    (with a note) if its replacement has no price or isn't allowed there. Deleting the default replacement ends the
+    phase-out wherever it applied; deleting an account's own replacement means that account keeps the old security.
+    Copying a portfolio's setup copies the default replacement only (the copy has its own accounts).
 
 ## Prices and exchange rates
 - **Price sheet:** a Google Sheet with tickers in column A (e.g. `TSE:XEC`, `NYSEARCA:ITOT`; the exchange prefix is

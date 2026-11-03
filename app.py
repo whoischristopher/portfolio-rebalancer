@@ -305,6 +305,8 @@ def delete_account(account_id):
     # No FK cascade from transactions to accounts – remove them explicitly.
     RebalanceTransaction.query.filter_by(account_id=account.id).delete()
     PendingRedemption.query.filter_by(account_id=account.id).delete()
+    from models import SecurityReplacement
+    SecurityReplacement.query.filter_by(account_id=account.id).delete()
     db.session.delete(account)
     db.session.commit()
     flash(f'Account "{account.name}" deleted successfully', 'success')
@@ -931,7 +933,7 @@ def edit_security(security_id):
             flash(f'{ticker or "Ticker"} is missing or already in this portfolio.', 'error')
             return redirect(url_for('edit_security', security_id=security.id))
         new_class = _asset_class_from_form() or security.asset_class_id
-        replacement, problem = _migration_from_form(security, new_class)
+        plan, problem = _migration_from_form(security, new_class)
         if problem:
             db.session.rollback()          # the asset-class lookup may have created a class
             flash(problem, 'error')
@@ -939,9 +941,7 @@ def edit_security(security_id):
         security.ticker = ticker
         security.name = request.form.get('name')
         security.asset_class_id = new_class
-        security.replaced_by_id = replacement.id if replacement else None
-        security.migrate_registered_now = bool(replacement) and request.form.get('migrate_registered_now') == 'on'
-        security.migration_sl_link = request.form.get('migration_sl_link') == 'on' if replacement else True
+        _apply_migration_plan(security, plan)
         security.currency = request.form.get('currency', 'CAD')
         security.auto_update_price = request.form.get('auto_update_price') == 'on'
         security.is_illiquid = request.form.get('is_illiquid') == 'on'
@@ -950,49 +950,132 @@ def edit_security(security_id):
             set_security_price(security, float(request.form['price']))
         db.session.commit()
         flash(f'Security {security.ticker} updated successfully.', 'success')
+        for w in _migration_warnings(security):
+            flash(w, 'warning')
         return redirect(url_for('securities'))
+    overrides = {r.account_id: ('keep' if r.replacement_id is None else r.replacement_id)
+                 for r in security.account_replacements}
     return render_template(
         'edit_security.html',
         security=security,
         asset_classes=_p_asset_classes(),
+        accounts=_p_accounts(),
+        overrides=overrides,
         replacement_options=[s for s in _p_securities()
                              if s.id != security.id and s.asset_class_id == security.asset_class_id
-                             and not s.replaced_by_id],
+                             and not s.is_phasing_out],
     )
 
 
+def _predecessors(security):
+    """Securities that this one replaces – by default or in some account."""
+    from models import SecurityReplacement
+    via_override = [r.security for r in SecurityReplacement.query.filter_by(replacement_id=security.id).all()]
+    out = {s.id: s for s in list(security.replacing) + via_override if s.id != security.id}
+    return sorted(out.values(), key=lambda s: s.ticker)
+
+
 def _migration_from_form(security, asset_class_id):
-    """(replacement Security or None, error message or None) from the edit form's
-    "phase out in favour of" field. The replacement must be another security of the same
-    portfolio and asset class that isn't itself being phased out (no chains)."""
-    raw = (request.form.get('replaced_by_id') or '').strip()
-    predecessors = [s for s in security.replacing if s.id != security.id]
+    """Read the phase-out fields: a default replacement (replaced_by_id) and per-account
+    choices (acct_repl_<account id>: '' = use the default, 'keep' = keep it in that account,
+    or a security id). Returns ({'default': Security|None, 'accounts': {account_id: Security|'keep'}},
+    error message or None). Every replacement must be another security of the same portfolio
+    and asset class that isn't itself being phased out (no chains)."""
+    predecessors = _predecessors(security)
     if any(s.asset_class_id != asset_class_id for s in predecessors):
-        return None, (f'{security.ticker} is the replacement for '
-                      + ', '.join(s.ticker for s in predecessors)
-                      + ' – a replacement has to stay in the same asset class.')
-    if not raw:
-        return None, None
-    new = _get(Security, raw)
-    if new.id == security.id:
-        return None, 'A security can\'t replace itself.'
-    if new.asset_class_id != asset_class_id:
-        return None, (f'{new.ticker} is in {new.asset_class.name if new.asset_class else "another asset class"}. '
-                      'Phase out into a security of the same asset class – to move money between asset '
-                      'classes, change the targets instead.')
-    if new.replaced_by_id:
-        return None, f'{new.ticker} is itself being phased out – pick the security it is moving to.'
-    if predecessors:
         return None, (f'{security.ticker} is the replacement for ' + ', '.join(s.ticker for s in predecessors)
-                      + '. Point those at the new security first.')
-    return new, None
+                      + ' – a replacement has to stay in the same asset class.')
+    cache = {}
+
+    def pick(raw):
+        if raw in cache:
+            return cache[raw]
+        new = _get(Security, raw)
+        if new.id == security.id:
+            raise EntryError("A security can't replace itself.")
+        if new.asset_class_id != asset_class_id:
+            raise EntryError(f'{new.ticker} is in {new.asset_class.name if new.asset_class else "another asset class"}. '
+                             'Phase out into a security of the same asset class – to move money between asset '
+                             'classes, change the targets instead.')
+        if new.is_phasing_out:
+            raise EntryError(f'{new.ticker} is itself being phased out – pick the security it is moving to.')
+        cache[raw] = new
+        return new
+
+    plan = {'default': None, 'accounts': {}}
+    try:
+        raw = (request.form.get('replaced_by_id') or '').strip()
+        plan['default'] = pick(raw) if raw else None
+        for acc in _p_accounts():
+            raw = (request.form.get(f'acct_repl_{acc.id}') or '').strip()
+            if raw == 'keep':
+                plan['accounts'][acc.id] = 'keep'
+            elif raw:
+                plan['accounts'][acc.id] = pick(raw)
+    except EntryError as exc:
+        return None, str(exc)
+    if any(v != 'keep' for v in plan['accounts'].values()) or plan['default']:
+        if predecessors:
+            return None, (f'{security.ticker} is the replacement for ' + ', '.join(s.ticker for s in predecessors)
+                          + '. Point those at the new security first.')
+    return plan, None
+
+
+def _apply_migration_plan(security, plan):
+    from models import SecurityReplacement
+    default = plan['default']
+    security.replaced_by_id = default.id if default else None
+    wanted = {}
+    for acc_id, choice in plan['accounts'].items():
+        rid = None if choice == 'keep' else choice.id
+        if rid == security.replaced_by_id:
+            continue                      # same as the default: no override needed
+        if choice == 'keep' and not default:
+            continue                      # nothing to keep it from
+        wanted[acc_id] = rid
+    existing = {r.account_id: r for r in security.account_replacements}
+    for acc_id, r in existing.items():
+        if acc_id not in wanted:
+            security.account_replacements.remove(r)
+    for acc_id, rid in wanted.items():
+        if acc_id in existing:
+            existing[acc_id].replacement_id = rid
+        else:
+            security.account_replacements.append(SecurityReplacement(account_id=acc_id, replacement_id=rid))
+    db.session.flush()
+    db.session.expire(security, ['account_replacements', 'replaced_by'])
+    active = security.is_phasing_out
+    security.migrate_registered_now = active and request.form.get('migrate_registered_now') == 'on'
+    security.migration_sl_link = request.form.get('migration_sl_link') == 'on' if active else True
+
+
+def _migration_warnings(security):
+    """Accounts where the chosen replacement can't be bought (account restrictions) – the
+    phase-out pauses there, so say so now rather than only in the next plan."""
+    if not security.is_phasing_out:
+        return []
+    from rebalancer import _buy_levels
+    accounts = _p_accounts()
+    reps = security.replacement_securities
+    levels = _buy_levels(current_portfolio(), accounts, reps)
+    out = []
+    for acc in accounts:
+        r = security.replacement_for(acc.id)
+        if r is not None and (acc.id, r.id) not in levels:
+            out.append(f'{r.ticker} is restricted from {acc.name}, so {security.ticker} won\'t be phased out there – '
+                       f'pick another replacement for {acc.name} or change {r.ticker}\'s restrictions.')
+    return out
 
 
 @app.route('/securities/<int:security_id>/delete', methods=['POST'])
 @login_required
 def delete_security(security_id):
     s = _get(Security, security_id)
+    from models import SecurityReplacement
     Security.query.filter_by(replaced_by_id=s.id).update({'replaced_by_id': None})   # ends those migrations
+    # An account that was to move into it keeps the old security there instead – never
+    # silently switched to some other replacement.
+    SecurityReplacement.query.filter_by(replacement_id=s.id).update({'replacement_id': None})
     RebalanceTransaction.query.filter_by(security_id=s.id, executed=False).delete()
     PendingRedemption.query.filter_by(security_id=s.id).delete()
     db.session.delete(s)
@@ -1574,7 +1657,9 @@ def _copy_setup(src, dst):
             migrate_registered_now=sec.migrate_registered_now, migration_sl_link=sec.migration_sl_link)
         db.session.add(sec_map[sec.id])
     db.session.flush()
-    for sec in src.securities:          # migrations point at the copies, never across portfolios
+    # Default replacements point at the copies, never across portfolios. Per-account
+    # overrides aren't copied: the new portfolio has its own accounts.
+    for sec in src.securities:
         if sec.replaced_by_id in sec_map:
             sec_map[sec.id].replaced_by_id = sec_map[sec.replaced_by_id].id
     for t in src.targets:

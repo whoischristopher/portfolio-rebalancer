@@ -320,10 +320,12 @@ class Security(db.Model):
     is_managed = db.Column(db.Boolean, default=False)
     last_price = db.Column(db.Float, nullable=True)   # THE price (security currency); holdings mirror it
     # Gradual migration: this security is being phased out in favour of replaced_by (same
-    # portfolio and asset class). It's never bought, and is the first thing sold in its
-    # class when that's no worse for tax. migrate_registered_now: sell it outright in
-    # registered accounts (no tax there). migration_sl_link: treat the pair as identical
-    # property for the superficial-loss rule (the conservative default).
+    # portfolio and asset class) – the DEFAULT replacement; account_replacements override
+    # it per account (a different security, or "keep it here"). Where it's being replaced
+    # it's never bought, and is the first thing sold in its class when that's no worse for
+    # tax. migrate_registered_now: sell it outright in registered accounts (no tax there).
+    # migration_sl_link: treat it and its replacements as identical property for the
+    # superficial-loss rule (the conservative default).
     replaced_by_id = db.Column(db.Integer, db.ForeignKey('securities.id'), nullable=True)
     migrate_registered_now = db.Column(db.Boolean, default=False)
     migration_sl_link = db.Column(db.Boolean, default=True)
@@ -337,6 +339,44 @@ class Security(db.Model):
 
     # Optional if you want holdings to reference this security directly
     holdings = db.relationship('Holding', back_populates='security', cascade='all, delete-orphan')
+    account_replacements = db.relationship('SecurityReplacement', foreign_keys='SecurityReplacement.security_id',
+                                           back_populates='security', cascade='all, delete-orphan')
+
+    def replacement_for(self, account_id):
+        """The security that replaces this one in that account, or None (not phased out there)."""
+        for r in self.account_replacements:
+            if r.account_id == account_id:
+                return r.replacement
+        return self.replaced_by
+
+    @property
+    def is_phasing_out(self):
+        return bool(self.replaced_by_id) or any(r.replacement_id for r in self.account_replacements)
+
+    @property
+    def replacement_securities(self):
+        """Every security this one is being replaced by, default first."""
+        out = [self.replaced_by] if self.replaced_by else []
+        for r in sorted(self.account_replacements, key=lambda r: r.account_id):
+            if r.replacement and r.replacement not in out:
+                out.append(r.replacement)
+        return out
+
+
+class SecurityReplacement(db.Model):
+    """Per-account override of a phase-out: in this account, security is replaced by
+    replacement – or, with replacement_id NULL, kept (not phased out there)."""
+    __tablename__ = 'security_replacements'
+    __table_args__ = (db.UniqueConstraint('security_id', 'account_id', name='uq_security_replacement_account'),)
+
+    id = db.Column(db.Integer, primary_key=True)
+    security_id = db.Column(db.Integer, db.ForeignKey('securities.id'), nullable=False, index=True)
+    account_id = db.Column(db.Integer, db.ForeignKey('accounts.id'), nullable=False, index=True)
+    replacement_id = db.Column(db.Integer, db.ForeignKey('securities.id'), nullable=True)
+
+    security = db.relationship('Security', foreign_keys=[security_id], back_populates='account_replacements')
+    replacement = db.relationship('Security', foreign_keys=[replacement_id])
+    account = db.relationship('Account')
 
 
 class SecurityPreference(db.Model):

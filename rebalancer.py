@@ -98,7 +98,8 @@ def build_problem(portfolio, exchange_rates, allow_taxable_sells: bool) -> tuple
     if unpriced:
         notes.append("No price for " + ", ".join(sorted(unpriced)) +
                      " (not held and not in your price sheet) – they can't be bought this time.")
-    sl_links = _apply_migrations(sec_in, securities, notes)
+    levels = _buy_levels(portfolio, accounts, securities)
+    sl_groups = _apply_migrations(sec_in, securities, accounts, levels, notes)
 
     acc_in = [AccountIn(
         id=a.id, name=a.name, taxable=not a.is_registered, currency=a.currency or base,
@@ -126,18 +127,18 @@ def build_problem(portfolio, exchange_rates, allow_taxable_sells: bool) -> tuple
                      "(treated as already redeemed).")
 
     recent_buys, recent_loss_sells = _superficial_loss_history(portfolio, notes)
-    # A phased-out security and its replacement treated as identical property: a recent
-    # buy or loss sale of either one counts for both.
-    for pair in sl_links:
+    # A phased-out security and its replacements treated as identical property: a recent
+    # buy or loss sale of any of them counts for all.
+    for group in sl_groups:
         for seen in (recent_buys, recent_loss_sells):
-            if seen & set(pair):
-                seen |= set(pair)
+            if seen & group:
+                seen |= group
 
     problem = Problem(
         accounts=acc_in, securities=sec_in, positions=pos_in,
         targets={t.asset_class_id: t.target_percentage for t in targets},
         class_names={t.asset_class_id: t.asset_class.name for t in targets},
-        buy_levels=_buy_levels(portfolio, accounts, securities),
+        buy_levels=levels,
         threshold_pp=portfolio.balanced_threshold if portfolio.balanced_threshold is not None else 0.5,
         trade_cost=portfolio.trade_cost or 0.0,
         allow_taxable_sells=allow_taxable_sells,
@@ -149,31 +150,60 @@ def build_problem(portfolio, exchange_rates, allow_taxable_sells: bool) -> tuple
     return problem, notes
 
 
-def _apply_migrations(sec_in, securities, notes) -> list[tuple[int, int]]:
-    """Mark phased-out securities on the optimiser's inputs. A migration only takes
-    effect when its replacement can be bought this time (priced, same targeted asset
-    class); otherwise the old security is treated normally and a note says why.
-    Returns the (old, new) id pairs to treat as identical for the superficial-loss rule."""
+def _apply_migrations(sec_in, securities, accounts, levels, notes) -> list[set]:
+    """Mark phased-out securities on the optimiser's inputs, account by account.
+
+    In each account the replacement is the account's override, else the default. It only
+    takes effect when that replacement can be bought there this time (priced, same
+    targeted asset class, allowed in that account); otherwise the old security is treated
+    normally in that account and a note says why.
+    Returns groups of security ids to treat as identical for the superficial-loss rule."""
     by_id = {s.id: s for s in sec_in}
-    links = []
+    parent: dict[int, int] = {}
+
+    def find(x):
+        while parent.get(x, x) != x:
+            x = parent[x]
+        return x
+
+    def union(a, b):
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[max(ra, rb)] = min(ra, rb)
+
     for sec in securities:
-        if not sec.replaced_by_id or sec.id not in by_id:
+        if not sec.is_phasing_out or sec.id not in by_id:
             continue
-        old, new = by_id[sec.id], by_id.get(sec.replaced_by_id)
-        new_row = sec.replaced_by
-        new_t = new_row.ticker if new_row else "its replacement"
-        if new is None or new.asset_class_id != old.asset_class_id:
-            reason = ("has no price" if new_row and new_row.asset_class_id == sec.asset_class_id
-                      else "isn't in the same asset class")
-            notes.append(f"Phasing out {sec.ticker} is paused: {new_t} {reason}, so {sec.ticker} "
-                         "is treated as a normal holding this time.")
-            continue
-        old.replaced_by = new.id
+        old = by_id[sec.id]
+        paused: dict[str, list[str]] = {}          # reason → account names
+        for acc in accounts:
+            new_row = sec.replacement_for(acc.id)
+            if new_row is None:
+                continue
+            new = by_id.get(new_row.id)
+            if new is None or new.asset_class_id != old.asset_class_id:
+                reason = ("has no price" if new_row.asset_class_id == sec.asset_class_id
+                          else "isn't in the same asset class")
+            elif (acc.id, new.id) not in levels:
+                reason = "isn't allowed there (Securities → restrictions)"
+            else:
+                old.replaced_in[acc.id] = new.id
+                if sec.migration_sl_link is not False:
+                    union(old.id, new.id)
+                continue
+            paused.setdefault(f"{new_row.ticker} {reason}", []).append(acc.name)
+        for reason, names in sorted(paused.items()):
+            notes.append(f"Phasing out {sec.ticker} is paused in {', '.join(sorted(names))}: {reason}, so "
+                         f"{sec.ticker} is treated as a normal holding there this time.")
         old.switch_registered_now = bool(sec.migrate_registered_now)
-        if sec.migration_sl_link is not False:
-            old.sl_group = new.sl_group = old.id
-            links.append((old.id, new.id))
-    return links
+
+    groups: dict[int, set] = {}
+    for x in list(parent) + [v for v in parent.values()]:
+        groups.setdefault(find(x), set()).add(x)
+    for root, members in groups.items():
+        for m in members:
+            by_id[m].sl_group = root
+    return [g for g in groups.values() if len(g) > 1]
 
 
 def _managed_book_value_notes(portfolio) -> list[str]:

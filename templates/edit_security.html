@@ -48,30 +48,60 @@
 
         <fieldset class="migration">
             <legend>Phase out (gradual switch to another security)</legend>
-            <div class="form-group" style="max-width: 24rem;">
+            <div class="form-group" style="max-width: 26rem;">
                 <label for="replaced_by_id">Replace {{ security.ticker }} with</label>
                 <select name="replaced_by_id" id="replaced_by_id" data-migration-select>
-                    <option value="">– keep {{ security.ticker }} (no phase-out) –</option>
+                    <option value="">– no default (only the accounts set below) –</option>
                     {% for s in replacement_options %}
                     <option value="{{ s.id }}" {% if s.id == security.replaced_by_id %}selected{% endif %}>{{ s.ticker }}{% if s.name %} – {{ s.name }}{% endif %}</option>
                     {% endfor %}
                 </select>
+                <small class="help">The default for every account. Leave it empty and set no accounts below to keep {{ security.ticker }}.</small>
                 {% if not replacement_options %}<small class="help">Add the new security to {{ security.asset_class.name if security.asset_class else 'this asset class' }} first (Securities → Add).</small>{% endif %}
                 {% if security.replacing %}<small class="help">{{ security.ticker }} is the replacement for {{ security.replacing|map(attribute='ticker')|join(', ') }}.</small>{% endif %}
             </div>
-            <p class="help">While phasing out, {{ security.ticker }} is never bought – new money goes to the replacement – and
-                when something in this asset class has to be sold, {{ security.ticker }} goes first <em>unless</em> selling it
-                would realise more capital gain than selling something else. Taxable holdings are never sold just to switch.</p>
+
+            {% if accounts and replacement_options %}
+            <details class="per-account" {% if overrides %}open{% endif %}>
+                <summary>Different replacement in some accounts{% if overrides %} ({{ overrides|length }} set){% endif %}</summary>
+                <p class="help">E.g. a US-listed fund in the RRSP (no US withholding tax there) and a Canadian-listed one elsewhere.
+                    The replacement must be allowed in that account under its restrictions.</p>
+                <table class="per-account-table">
+                    <tbody>
+                    {% for a in accounts %}
+                    {% set held = a.holdings|selectattr('security_id', 'equalto', security.id)|list %}
+                    {% set cur = overrides.get(a.id, '') %}
+                    <tr>
+                        <td><strong>{{ a.name }}</strong><span class="sub">{{ a.account_type or ('registered' if a.is_registered else 'taxable') }}{% if held %} · holds {{ security.ticker }}{% endif %}</span></td>
+                        <td>
+                            <select name="acct_repl_{{ a.id }}" aria-label="Replacement in {{ a.name }}" data-migration-select>
+                                <option value="" {% if cur == '' %}selected{% endif %}>Use the default</option>
+                                <option value="keep" {% if cur == 'keep' %}selected{% endif %}>Keep {{ security.ticker }} here</option>
+                                {% for s in replacement_options %}
+                                <option value="{{ s.id }}" {% if cur == s.id %}selected{% endif %}>{{ s.ticker }}</option>
+                                {% endfor %}
+                            </select>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                    </tbody>
+                </table>
+            </details>
+            {% endif %}
+
+            <p class="help">Where it's being phased out, {{ security.ticker }} is never bought – new money goes to that account's
+                replacement – and when something in this asset class has to be sold, {{ security.ticker }} goes first <em>unless</em>
+                selling it would realise more capital gain than selling something else. Taxable holdings are never sold just to switch.</p>
             <div class="stack" data-migration-options>
                 <label class="check"><input type="checkbox" name="migrate_registered_now" {% if security.migrate_registered_now %}checked{% endif %}>
                     Switch registered accounts now</label>
                 <small class="help">Sells all of {{ security.ticker }} in RRSPs, TFSAs etc. in the next plan and buys the
                     replacement – there's no tax on switching there, only the trading cost.</small>
                 <label class="check" style="margin-top: 0.75rem;"><input type="checkbox" name="migration_sl_link" {% if security.migration_sl_link is not false %}checked{% endif %}>
-                    Treat the two as identical for the superficial-loss rule</label>
+                    Treat them as identical for the superficial-loss rule</label>
                 <small class="help">Two funds tracking the same index may be "identical property" to the CRA. When ticked, selling
-                    {{ security.ticker }} at a loss in a taxable account is never paired with buying the replacement within 30 days.
-                    Untick only if you're confident they aren't identical (e.g. different indexes) – check with a tax professional.</small>
+                    {{ security.ticker }} (or a replacement) at a loss in a taxable account is never paired with buying another of them
+                    within 30 days. Untick only if you're confident they aren't identical (e.g. different indexes) – check with a tax professional.</small>
             </div>
         </fieldset>
 
