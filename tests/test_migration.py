@@ -218,7 +218,7 @@ def test_per_account_replacements_form_and_plan(mig):
         assert o.replacement_for(ids["tfsa"]).id == alt and o.replacement_for(ids["nr"]) is None
         assert {s.ticker for s in o.replacement_securities} == {"NEW", "ALT"}
     page = c.get(f"/securities/{ids['old']}/edit").get_data(as_text=True)
-    assert "Different replacement in some accounts (2 set)" in page
+    assert "Exceptions for some accounts (2 set)" in page
     assert "phasing out → NEW, ALT" in c.get("/securities").get_data(as_text=True)
 
     c.post("/rebalance/generate")
@@ -264,7 +264,7 @@ def test_restricted_replacement_pauses_that_account(mig):
     alt = _add_alt(app, db, ids, restrict_to=[ids["nr"]])          # ALT not allowed in the TFSA
     r = _edit(c, ids["old"], "OLD", "Equity", replaced_by_id=str(alt), migrate_registered_now="on")
     page = c.get("/securities").get_data(as_text=True)
-    assert "restricted from TFSA" in page                            # warned on save
+    assert "be phased out in TFSA" in page and "allowed there (Securities" in page   # warned on save
     c.post("/rebalance/generate")
     assert not [t for t in _plan(app, ids) if t[0] == ids["tfsa"]]   # TFSA paused, nothing forced
     assert "Phasing out OLD is paused in TFSA" in c.get("/rebalance").get_data(as_text=True)
