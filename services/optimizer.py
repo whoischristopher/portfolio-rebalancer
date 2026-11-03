@@ -33,11 +33,11 @@ Hard constraints:
     cannot be bought in ANY account in the same plan; securities bought in
     the last 30 days cannot be sold at a loss in a taxable account; and
     securities sold at a loss in the last 30 days cannot be bought.
-    Securities sharing an sl_group (a phased-out security and its replacement,
+    Securities sharing an sl_group (a phased-out security and its replacements,
     when the user treats them as identical property) count as one security here.
-  * a phased-out security (replaced_by set) is never bought; with
-    switch_registered_now its registered-account holdings are sold in full
-    (no tax there), and the proceeds normally go to the replacement.
+  * a security being phased out in an account (replaced_in[account] set) is never
+    bought there; with switch_registered_now its registered-account holdings are sold
+    in full (no tax there), and the proceeds normally go to that account's replacement.
 """
 from __future__ import annotations
 
@@ -79,7 +79,9 @@ class SecurityIn:
     currency: str
     sellable: bool = True             # False = illiquid (e.g. private fund, redemption takes months)
     managed: bool = False             # provider-managed (direct indexing): no superficial-loss rule
-    replaced_by: int | None = None    # being phased out in favour of this security id: never bought
+    # Phase-out: account_id -> the security replacing this one in that account. In those
+    # accounts it's never bought and is sold first when that's no worse for tax.
+    replaced_in: dict = field(default_factory=dict)
     switch_registered_now: bool = False   # phased out: sell all of it in registered accounts now
     sl_group: int | None = None       # superficial-loss identity (None = itself)
 
@@ -283,7 +285,8 @@ def solve(p: Problem) -> Result:
         # Superficial loss doesn't apply to a provider-managed sleeve as a whole: what's
         # actually disposed of is the provider's choice of underlying stocks.
         sl_applies = not s.managed
-        can_buy = (level is not None and s.replaced_by is None
+        phasing_out = a_id in s.replaced_in
+        can_buy = (level is not None and not phasing_out
                    and not (sl_applies and s_id in p.recent_loss_sells))
 
         # realised gain per share if sold (taxable accounts only)
@@ -302,7 +305,7 @@ def solve(p: Problem) -> Result:
 
         max_buy = capacity[a_id] / s.price if can_buy else 0.0
         sell_cost = (W.idle_cash + W.turnover) * s.price + (W.gain * max(gain_ps, 0.0) if a.taxable else 0.0)
-        if s.replaced_by is not None:
+        if phasing_out:
             sell_cost -= W.migrate * s.price
 
         i = dict(acct=a, sec=s, held=q_held, gain_ps=gain_ps,
@@ -317,8 +320,7 @@ def solve(p: Problem) -> Result:
         i["z"] = V.add(0, 1, cost=W.position, integer=True)
         if q_held > 0:
             const_offset += W.position
-        if (s.replaced_by is not None and s.switch_registered_now and not a.taxable
-                and can_sell and q_held > 0):
+        if phasing_out and s.switch_registered_now and not a.taxable and can_sell and q_held > 0:
             # Switching inside a registered account costs no tax: sell the whole position now.
             V.lb[i["s"]] = q_held
             V.lb[i["ys"]] = 1
@@ -520,26 +522,28 @@ def _buy_candidates(p: Problem, acc, sec, held) -> set:
     held_elsewhere: dict[int, float] = {}
     for (a_id, s_id), (q, _) in held.items():
         held_elsewhere[s_id] = held_elsewhere.get(s_id, 0.0) + q * sec[s_id].price
-    replacements = {s.replaced_by for s in sec.values() if s.replaced_by is not None}
+    # (account, security) pairs where that security replaces something in that account
+    replacing = {(a_id, r) for s in sec.values() for a_id, r in s.replaced_in.items()}
     best: dict[tuple[int, int], tuple] = {}
     out = set()
     for (a_id, s_id), lvl in p.buy_levels.items():
         if a_id not in acc or s_id not in sec or sec[s_id].price <= 0:
             continue
-        if sec[s_id].replaced_by is not None:      # phased out: never a buy candidate
+        if a_id in sec[s_id].replaced_in:          # phased out here: never a buy candidate
             continue
         if s_id in p.recent_loss_sells and not sec[s_id].managed and (a_id, s_id) not in held:
             continue
         if (a_id, s_id) in held:
             out.add((a_id, s_id))
             continue
-        # Where the phased-out security is held, its replacement is always on offer.
-        if any(sec[o].replaced_by == s_id for (oa, o) in held if oa == a_id):
-            out.add((a_id, s_id))
-            continue
         key = (a_id, sec[s_id].asset_class_id)
-        # A replacement beats other new candidates of its class at the same level.
-        rank = (lvl, 0 if s_id in replacements else 1, -held_elsewhere.get(s_id, 0.0), sec[s_id].price, s_id)
+        if any(sec[o].replaced_in.get(a_id) == s_id for (oa, o) in held if oa == a_id):
+            # The phased-out security is held here: its replacement for this account is THE
+            # new candidate of the class, whatever its priority level.
+            rank = (-1, 0, 0.0, 0.0, s_id)
+        else:
+            # This account's replacement beats other new candidates of its class at the same level.
+            rank = (lvl, 0 if (a_id, s_id) in replacing else 1, -held_elsewhere.get(s_id, 0.0), sec[s_id].price, s_id)
         if key not in best or rank < best[key]:
             best[key] = rank
     out |= {(a_id, rank[-1]) for (a_id, _), rank in best.items()}
@@ -554,14 +558,13 @@ def _migration_notes(p: Problem, acc, sec, held, trades, forced_switch) -> list[
         if t.action == "SELL":
             sold[(t.account_id, t.security_id)] = sold.get((t.account_id, t.security_id), 0.0) + t.quantity
     for s in sorted(sec.values(), key=lambda s: s.ticker):
-        if s.replaced_by is None:
+        if not s.replaced_in:
             continue
-        new = sec.get(s.replaced_by)
-        new_t = new.ticker if new else "its replacement"
-        moved = sum(q for (a_id, s_id), q in sold.items() if s_id == s.id) * s.price
+        new_t = _replacement_label(s, sec, acc, held)
+        moved = sum(q for (a_id, s_id), q in sold.items() if s_id == s.id and a_id in s.replaced_in) * s.price
         left_tax = left_reg = 0.0
         for (a_id, s_id), (q, _) in held.items():
-            if s_id != s.id:
+            if s_id != s.id or a_id not in s.replaced_in:
                 continue
             v = max(q - sold.get((a_id, s_id), 0.0), 0.0) * s.price
             if acc[a_id].taxable:
@@ -592,6 +595,25 @@ def _migration_notes(p: Problem, acc, sec, held, trades, forced_switch) -> list[
             line += f" {s.ticker} can't be sold on demand, so it only shrinks as you redeem it."
         notes.append(line)
     return notes
+
+
+def _replacement_label(s, sec, acc, held) -> str:
+    """'NEW', or with different replacements per account 'XEF (VXUS in RRSP)' – the one
+    used in most accounts first, the others with the accounts holding s that use them."""
+    by_new: dict[int, list[int]] = {}
+    for a_id, r in s.replaced_in.items():
+        by_new.setdefault(r, []).append(a_id)
+    tick = lambda r: sec[r].ticker if r in sec else "its replacement"
+    if len(by_new) == 1:
+        return tick(next(iter(by_new)))
+    main = max(by_new, key=lambda r: (len(by_new[r]), -r))
+    others = []
+    for r, accts in sorted(by_new.items(), key=lambda kv: tick(kv[0])):
+        if r == main:
+            continue
+        names = [acc[a].name for a in accts if (a, s.id) in held] or [acc[a].name for a in accts]
+        others.append(f"{tick(r)} in {', '.join(sorted(names))}")
+    return f"{tick(main)} ({'; '.join(others)})"
 
 
 def _dedupe(seq):

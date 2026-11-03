@@ -155,11 +155,17 @@
   });
 
   /* ---------- Edit security: phase-out options only matter with a replacement ---------- */
-  const migSel = document.querySelector('[data-migration-select]');
-  if (migSel) {
+  const migSels = document.querySelectorAll('[data-migration-select]');
+  if (migSels.length) {
     const opts = document.querySelector('[data-migration-options]');
-    const sync = () => opts && opts.classList.toggle('hidden', !migSel.value);
-    migSel.addEventListener('change', sync);
+    const active = () => [...migSels].some((s) => s.value && s.value !== 'keep');
+    const preview = document.querySelector('[data-auto-preview]');
+    const main = document.querySelector('#replaced_by_id');
+    const sync = () => {
+      if (opts) opts.classList.toggle('hidden', !active());
+      if (preview && main) preview.classList.toggle('hidden', main.value !== 'auto');
+    };
+    migSels.forEach((s) => s.addEventListener('change', sync));
     sync();
   }
 

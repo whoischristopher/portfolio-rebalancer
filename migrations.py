@@ -36,6 +36,7 @@ ADDED_COLUMNS = [
     ('securities', 'replaced_by_id', 'INTEGER'),
     ('securities', 'migrate_registered_now', 'BOOLEAN DEFAULT FALSE'),
     ('securities', 'migration_sl_link', 'BOOLEAN DEFAULT TRUE'),
+    ('securities', 'phase_out_auto', 'BOOLEAN DEFAULT FALSE'),
     ('holdings', 'book_value_as_of', 'DATE'),
     ('users', 'prices_updated_at', 'DATETIME'),
     ('users', 'price_refresh_minutes', 'INTEGER DEFAULT 15'),

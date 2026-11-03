@@ -361,10 +361,15 @@ VEQT_OLD, XEQT_NEW = 20, 21
 EQ = CA
 
 
-def _migration_problem(accounts, positions, *, switch_now=False, sl_link=True, targets=None, **kw):
-    secs = [SecurityIn(VEQT_OLD, "OLD", EQ, 40, 40, "CAD", replaced_by=XEQT_NEW, switch_registered_now=switch_now,
-                       sl_group=VEQT_OLD if sl_link else None),
-            SecurityIn(XEQT_NEW, "NEW", EQ, 30, 30, "CAD", sl_group=VEQT_OLD if sl_link else None),
+ALT = 22          # a second replacement, e.g. a US-listed fund for the RRSP
+
+
+def _migration_problem(accounts, positions, *, switch_now=False, sl_link=True, targets=None, replaced_in=None, **kw):
+    grp = VEQT_OLD if sl_link else None
+    secs = [SecurityIn(VEQT_OLD, "OLD", EQ, 40, 40, "CAD", switch_registered_now=switch_now, sl_group=grp,
+                       replaced_in=replaced_in if replaced_in is not None else {a.id: XEQT_NEW for a in accounts}),
+            SecurityIn(XEQT_NEW, "NEW", EQ, 30, 30, "CAD", sl_group=grp),
+            SecurityIn(ALT, "ALT", EQ, 50, 50, "CAD", sl_group=grp),
             SecurityIn(ZAG, "ZAG", BD, 14, 14, "CAD")]
     kw.setdefault("buy_levels", {(a.id, s.id): 0 for a in accounts for s in secs})
     return Problem(accounts=accounts, securities=secs, positions=positions,
@@ -438,3 +443,31 @@ def test_replacement_counts_as_identical_for_superficial_loss():
         outcome[sl_link] = (loss_sold, new_bought)
     assert outcome[False] == (True, True)            # not identical: switch and fill bonds in one go
     assert outcome[True] != (True, True)             # identical: never both in the same plan
+
+
+def test_different_replacement_per_account():
+    # RRSP switches OLD → ALT, TFSA switches OLD → NEW, both right away.
+    accts = [AccountIn(RRSP, "RRSP", False, 0), AccountIn(TFSA, "TFSA", False, 0)]
+    pos = [PositionIn(RRSP, VEQT_OLD, 100), PositionIn(TFSA, VEQT_OLD, 100),
+           PositionIn(RRSP, ZAG, 143)]
+    res = solve(_migration_problem(accts, pos, switch_now=True, targets={EQ: 85, BD: 15},
+                                   replaced_in={RRSP: ALT, TFSA: XEQT_NEW}))
+    buys = {(t.account_id, t.security_id) for t in trades_by(res, "BUY")}
+    assert (RRSP, ALT) in buys and (TFSA, XEQT_NEW) in buys
+    assert (RRSP, XEQT_NEW) not in buys and (TFSA, ALT) not in buys
+    note = next(n for n in res.notes if n.startswith("Phasing out OLD"))
+    assert "NEW (ALT in RRSP)" in note or "ALT (NEW in TFSA)" in note
+
+
+def test_phase_out_only_in_some_accounts():
+    # Phased out in the TFSA only: the RRSP may still buy OLD, and its OLD isn't counted as "left".
+    accts = [AccountIn(RRSP, "RRSP", False, 3000), AccountIn(TFSA, "TFSA", False, 3000)]
+    pos = [PositionIn(RRSP, VEQT_OLD, 100), PositionIn(TFSA, VEQT_OLD, 100), PositionIn(RRSP, ZAG, 200)]
+    lv = {(a, s): 0 for a in (RRSP, TFSA) for s in (VEQT_OLD, XEQT_NEW, ZAG)}
+    res = solve(_migration_problem(accts, pos, targets={EQ: 80, BD: 20}, replaced_in={TFSA: XEQT_NEW},
+                                   buy_levels=lv))
+    assert not [t for t in trades_by(res, "BUY", TFSA) if t.security_id == VEQT_OLD]
+    assert [t for t in trades_by(res, "BUY", RRSP) if t.security_id == VEQT_OLD]    # held there, still bought
+    # The TFSA consolidates into NEW (no tax there); the RRSP's OLD isn't part of the phase-out.
+    note = next(n for n in res.notes if n.startswith("Phasing out OLD"))
+    assert "fully switched" in note

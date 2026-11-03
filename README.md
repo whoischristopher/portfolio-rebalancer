@@ -85,8 +85,20 @@ Securities and Targets can be edited on their own pages.
   - **Treat as identical for the superficial-loss rule** (default on): two funds tracking the same index may be
     identical property, so a loss sale of one and a purchase of the other within 30 days are kept apart, and recent
     trades of either count for both. Untick only if you're sure they aren't (check with a tax professional).
-  - Each plan says how much was moved and what's left, split registered/taxable. A migration pauses (with a note) if
-    the replacement has no price. Deleting the replacement ends the migration.
+  - **Replacement by account preferences (automatic):** choose *By account preferences* and each account gets the
+    security of the same asset class that your asset-location preferences favour there. Example: Canadian bonds, B
+    restricted to the RRSP and C prioritized for the non-registered account → A is replaced by B in the RRSP and by C
+    in the non-registered account. The pick per account: lowest priority level there (Restricted-to and P1 = best,
+    unlisted under Prioritized = last), then a security whose preference names that account over one with no
+    preference, then the one already held most there, then in the portfolio. The edit page shows what automatic
+    picks for each account. Or pick **one security** for every account instead.
+  - **Exceptions per account** (optional): a specific replacement, or *Keep* the old security, in chosen accounts;
+    they win over the default. An explicit replacement must be allowed in that account under its restrictions – if it
+    isn't, or automatic finds nothing allowed, that account is paused (you're warned on save and in the plan).
+  - Each plan says how much was moved and what's left, split registered/taxable. A migration pauses in an account
+    (with a note) if its replacement has no price or isn't allowed there. Deleting the default replacement ends the
+    phase-out wherever it applied; deleting an account's own replacement means that account keeps the old security.
+    Copying a portfolio's setup copies the default replacement only (the copy has its own accounts).
 
 ## Prices and exchange rates
 - **Price sheet:** a Google Sheet with tickers in column A (e.g. `TSE:XEC`, `NYSEARCA:ITOT`; the exchange prefix is
