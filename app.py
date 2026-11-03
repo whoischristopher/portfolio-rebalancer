@@ -37,14 +37,15 @@ from services.fx import get_exchange_rates
 from services.portfolio import calculate_portfolio_allocation
 from services.prices import (
     PriceSheetError, fetch_prices_from_user_sheet, match_prices_across_portfolios, set_security_price,
-    sheet_coverage, sheet_rows_for,
+    sheet_coverage, sheet_name_for, sheet_rows_for,
     same_security_elsewhere,
 )
 from rebalancer import generate_plan
 from services.money import fmt_money
 from services.entry import (
     ACCOUNT_TYPES, CURRENCIES, NON_REGISTERED_ACCOUNT_TYPES, REGISTERED_ACCOUNT_TYPES, EntryError, lookup_elsewhere, parse_amount,
-    parse_holding_rows, registered_flag, save_holding_rows, find_security, suggest_currency, upsert_holding,
+    parse_holding_rows, registered_flag, resolve_security, save_holding_rows, find_security, suggest_currency,
+    upsert_holding,
 )
 from services.fx import BocRateError, boc_rate, convert_to_base
 
@@ -468,10 +469,20 @@ def refresh_prices(user):
     by_id = {s.id: s for s in candidates}
     for sec_id, price in matched.items():
         set_security_price(by_id[sec_id], price, propagate=False)
+    # Names from the sheet's optional column C fill in only names nobody has typed.
+    names = getattr(prices, 'names', None) or {}
+    named = set()
+    if names:
+        name_matches, _ = match_prices_across_portfolios(names, candidates)
+        for sec_id, name in name_matches.items():
+            if not (by_id[sec_id].name or '').strip():
+                by_id[sec_id].name = name
+                named.add(by_id[sec_id].ticker)
     user.prices_updated_at = datetime.utcnow()
-    user.price_sheet_snapshot = json.dumps({'tickers': tickers, 'priced': list(prices)})
+    user.price_sheet_snapshot = json.dumps({'tickers': tickers, 'priced': list(prices), 'names': names})
     db.session.commit()
     return {'updated': len({by_id[i].ticker for i in matched}),
+            'named': sorted(named),
             'portfolios': len({s.portfolio_id for s in candidates}),
             'missing': sorted({s.ticker for s in candidates if s.id not in matched}),
             'unmatched': sorted(unmatched)}
@@ -502,7 +513,8 @@ def update_prices():
         flash(f'Price update failed: {exc}', 'error')
         return redirect(_back())
     flash(f"Updated prices for {r['updated']} securities"
-          + (f" across {r['portfolios']} portfolios." if r['portfolios'] > 1 else '.'), 'success')
+          + (f" across {r['portfolios']} portfolios." if r['portfolios'] > 1 else '.')
+          + (f" Filled in the name of {', '.join(r['named'])} from the sheet." if r.get('named') else ''), 'success')
     # Anything the sheet is missing is shown by _sheet_gaps.html on the page we return to.
     return redirect(_back())
 
@@ -618,7 +630,7 @@ def setup_holdings(account_id=None):
             flash(str(exc), 'error')
             return render_template('setup_holdings.html', step='holdings', account=account, accounts=accounts,
                                    next_account=nxt, status=setup_status(P), posted=request.form,
-                                   **_entry_context())
+                                   unheld=_unheld_securities(), **_entry_context())
         if summary:
             _flash_holding_summary(account, summary)
         if request.form.get('next') == 'stay':
@@ -627,7 +639,49 @@ def setup_holdings(account_id=None):
             return redirect(url_for('setup_holdings', account_id=nxt.id))
         return redirect(url_for('setup_targets'))
     return render_template('setup_holdings.html', step='holdings', account=account, accounts=accounts,
-                           next_account=nxt, status=setup_status(P), posted=None, **_entry_context())
+                           next_account=nxt, status=setup_status(P), posted=None, unheld=_unheld_securities(),
+                           **_entry_context())
+
+
+def _unheld_securities():
+    """Securities in this portfolio that no account holds yet – things to buy."""
+    return [s for s in _p_securities() if not s.holdings]
+
+
+@app.route('/setup/holdings/<int:account_id>/security', methods=['POST'])
+@login_required
+def setup_add_security(account_id):
+    """Quick start, step 2: add a security you don't hold yet (e.g. the fund for a new
+    asset class), so the rebalancer has something to buy. No holding is created."""
+    P = current_portfolio()
+    account = _get(Account, account_id)
+    back = redirect(url_for('setup_holdings', account_id=account.id) + '#to-buy')
+    ticker = (request.form.get('ticker') or '').strip()
+    existing = find_security(P, ticker) if ticker else None
+    if existing:
+        flash(f'{existing.ticker} is already one of your securities.', 'info')
+        return back
+    # Blank fields fall back to the same ticker in another of your portfolios, then the sheet.
+    other = lookup_elsewhere(current_user.id, ticker) if ticker else None
+    name = ((request.form.get('name') or '').strip() or (other.name if other else None)
+            or _sheet_name(current_user, ticker))
+    ac_name = ((request.form.get('asset_class_name') or '').strip()
+               or (other.asset_class.name if other and other.asset_class else ''))
+    try:
+        price = parse_amount(request.form.get('price'), 'Price', minimum=0)
+        sec, _ = resolve_security(P, ticker, name=name, asset_class_name=ac_name,
+                                  currency=request.form.get('currency'), price=price,
+                                  default_currency=account.currency or P.base_currency or 'CAD')
+        db.session.commit()
+    except EntryError as exc:
+        db.session.rollback()
+        flash(str(exc), 'error')
+        return back
+    ac = sec.asset_class.name if sec.asset_class else ''
+    flash(f'Added {sec.ticker} ({ac}). It has no holdings yet; the rebalancer can buy it.', 'success')
+    if not sec.last_price:
+        flash(f'No price yet for {sec.ticker} – add it to your price sheet or type a price.', 'warning')
+    return back
 
 
 @app.route('/setup/targets', methods=['GET', 'POST'])
@@ -678,7 +732,8 @@ def setup_targets():
     fx = get_exchange_rates(P)
     _, alloc_pct, total_value = calculate_portfolio_allocation(P, fx)
     targets = {t.asset_class_id: t.target_percentage for t in Target.query.filter_by(portfolio_id=P.id).all()}
-    rows = [{'ac': ac, 'current': alloc_pct.get(ac.id, 0.0), 'target': targets.get(ac.id)}
+    rows = [{'ac': ac, 'current': alloc_pct.get(ac.id, 0.0), 'target': targets.get(ac.id),
+             'n_securities': len(ac.securities)}
             for ac in _p_asset_classes()]
     rows.sort(key=lambda r: -r['current'])
     return render_template('setup_targets.html', step='targets', rows=rows, total_value=total_value,
@@ -707,10 +762,23 @@ def api_security_lookup():
         sec = lookup_elsewhere(current_user.id, ticker)
         where = 'elsewhere'
     if sec is None:
-        return jsonify({'found': None, 'currency': suggest_currency(ticker, request.args.get('currency') or
-                                                                   P.base_currency or 'CAD')})
+        out = {'found': None, 'currency': suggest_currency(ticker, request.args.get('currency') or
+                                                           P.base_currency or 'CAD')}
+        name = _sheet_name(current_user, ticker)     # already in the price sheet → its name
+        if name:
+            out['name'] = name
+        return jsonify(out)
     return jsonify({'found': where, 'ticker': sec.ticker, 'name': sec.name or '', 'currency': sec.currency,
                     'asset_class': sec.asset_class.name if sec.asset_class else '', 'price': sec.last_price})
+
+
+def _sheet_name(user, ticker):
+    """The name column C of the price sheet gave this ticker at the last read (no sheet call)."""
+    try:
+        names = json.loads(user.price_sheet_snapshot or '{}').get('names') or {}
+    except ValueError:
+        return None
+    return sheet_name_for(ticker, names)
 
 
 # ---------------------------------------------------------------------------

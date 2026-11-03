@@ -29,11 +29,14 @@ class PriceSheetError(Exception):
 class SheetPrices(dict):
     """ticker → price, as read from the sheet, plus .tickers: every ticker in column A,
     including rows with no usable price (#N/A, Loading…) – so the app can tell a ticker
-    that's missing from the sheet apart from one whose GOOGLEFINANCE lookup fails."""
+    that's missing from the sheet apart from one whose GOOGLEFINANCE lookup fails –
+    and .names: ticker → security name from the optional column C
+    (=GOOGLEFINANCE(A2,"name")), for filling in names nobody has typed."""
 
-    def __init__(self, prices=None, tickers=None):
+    def __init__(self, prices=None, tickers=None, names=None):
         super().__init__(prices or {})
         self.tickers = list(tickers) if tickers is not None else list(self)
+        self.names = dict(names or {})
 
 
 # Column-A values treated as a header row rather than a ticker.
@@ -60,7 +63,8 @@ def _to_float(value):
 
 
 def fetch_prices_from_user_sheet(user) -> SheetPrices:
-    """Read ticker→price from the user's Google Sheet (column A ticker, column B price).
+    """Read ticker→price from the user's Google Sheet (column A ticker, column B price,
+    optional column C name).
 
     Reads the first sheet tab, UNFORMATTED values (so "$45.12" or "1,234.50"
     formatting can't break parsing).  Raises PriceSheetError on failure.
@@ -89,7 +93,7 @@ def fetch_prices_from_user_sheet(user) -> SheetPrices:
         first_tab = meta["sheets"][0]["properties"]["title"]
         result = service.spreadsheets().values().get(
             spreadsheetId=user.price_sheet_id,
-            range=f"'{first_tab}'!A1:B",
+            range=f"'{first_tab}'!A1:C",
             valueRenderOption="UNFORMATTED_VALUE",
         ).execute()
     except Exception as exc:
@@ -103,9 +107,17 @@ def fetch_prices_from_user_sheet(user) -> SheetPrices:
     return prices
 
 
+def _clean_name(value):
+    """A usable name from column C, or None for blanks and formula errors (#N/A, Loading…)."""
+    name = str(value).strip() if value is not None else ""
+    if not name or name.startswith("#") or name.lower().startswith("loading"):
+        return None
+    return name[:200]
+
+
 def parse_sheet_rows(rows) -> SheetPrices:
-    """Turn the sheet's A:B values into SheetPrices. Blank and header rows are skipped."""
-    prices, tickers = {}, []
+    """Turn the sheet's A:C values into SheetPrices. Blank and header rows are skipped."""
+    prices, tickers, names = {}, [], {}
     for row in rows:
         ticker = str(row[0]).strip() if row else ""
         if not ticker or ticker.upper() in _HEADER_WORDS:
@@ -118,7 +130,23 @@ def parse_sheet_rows(rows) -> SheetPrices:
             price = None            # "#N/A", "Loading..." etc.
         if price and price > 0:
             prices[ticker] = price
-    return SheetPrices(prices, tickers)
+        name = _clean_name(row[2]) if len(row) > 2 else None
+        if name:
+            names[ticker] = name
+    return SheetPrices(prices, tickers, names)
+
+
+def sheet_name_for(ticker, names: dict):
+    """Name the sheet gives for *ticker* (exchange prefix/suffix ignored), if exactly one
+    row matches – used to pre-fill a new security that's already in the sheet."""
+    if not ticker or not names:
+        return None
+    exact = {t.strip().upper(): n for t, n in names.items()}
+    if ticker.strip().upper() in exact:
+        return exact[ticker.strip().upper()]
+    key = normalize_ticker(ticker)
+    hits = {n for t, n in names.items() if normalize_ticker(t) == key}
+    return hits.pop() if len(hits) == 1 else None
 
 
 def _explain_google_error(exc) -> str:
@@ -215,8 +243,9 @@ def set_security_price(security, price: float, propagate: bool = True):
 _GF_PREFIX_FOR_SUFFIX = {".TO": "TSE", ".TSX": "TSE", ".V": "CVE", ".NE": "NEO", ".CN": "CNSX"}
 
 # Formula for column B that prices whatever ticker sits in column A of the same row,
-# so the rows can be pasted anywhere in the sheet.
+# so the rows can be pasted anywhere in the sheet. Column C (optional) gives the name.
 SHEET_PRICE_FORMULA = '=GOOGLEFINANCE(INDIRECT("A"&ROW()),"price")'
+SHEET_NAME_FORMULA = '=IFERROR(GOOGLEFINANCE(INDIRECT("A"&ROW()),"name"),"")'
 
 
 def google_finance_symbol(ticker: str, currency: str = "CAD") -> str:
@@ -265,6 +294,7 @@ def sheet_coverage(sheet_tickers, priced_tickers, securities) -> dict:
 
 
 def sheet_rows_for(securities) -> str:
-    """Tab-separated rows (ticker, formula) – pasted into column A of the sheet they fill A and B."""
-    return "\n".join(f"{google_finance_symbol(s.ticker, s.currency)}\t{SHEET_PRICE_FORMULA}"
+    """Tab-separated rows (ticker, price formula, name formula) – pasted into column A of
+    the sheet they fill A, B and C."""
+    return "\n".join(f"{google_finance_symbol(s.ticker, s.currency)}\t{SHEET_PRICE_FORMULA}\t{SHEET_NAME_FORMULA}"
                      for s in securities)

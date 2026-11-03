@@ -206,6 +206,60 @@ def test_lookup_api_and_isolation(fresh_user):
     assert c.post(f"/accounts/{sp_acct_id}/edit", data={"name": "x"}).status_code == 404
 
 
+def test_wizard_adds_a_security_without_a_holding(fresh_user):
+    """Step 2 can add a security nobody holds yet (so the rebalancer has something to buy),
+    and step 3 flags a target asset class that has no security at all."""
+    app, db, c, ids = fresh_user
+    import json
+    from models import Account, AssetClass, Holding, Portfolio, Security, User
+    with app.app_context():
+        a = Account(user_id=ids["user"], portfolio_id=ids["p"], name="RRSP", account_type="RRSP",
+                    is_registered=True, currency="CAD")
+        db.session.add(a)
+        u = db.session.get(User, ids["user"])
+        u.price_sheet_snapshot = json.dumps({"tickers": ["TSE:ZAG"], "priced": ["TSE:ZAG"],
+                                             "names": {"TSE:ZAG": "BMO Aggregate Bond Index ETF"}})
+        other = Portfolio(user_id=ids["user"], name="Spouse")
+        db.session.add(other); db.session.flush()
+        oac = AssetClass(portfolio_id=other.id, name="US Equity")
+        db.session.add(oac); db.session.flush()
+        db.session.add(Security(portfolio_id=other.id, ticker="ITOT", name="iShares Core S&P Total US",
+                                asset_class_id=oac.id, currency="USD", last_price=130.0))
+        db.session.commit(); acct = a.id
+    # Name left blank → taken from the price sheet's column C.
+    r = c.post(f"/setup/holdings/{acct}/security", data={"ticker": "ZAG", "name": "", "asset_class_name": "Bonds",
+                                                       "currency": "CAD", "price": "14.10"})
+    assert r.status_code == 302 and r.headers["Location"].endswith(f"/setup/holdings/{acct}#to-buy")
+    # Name and asset class left blank → copied from the same ticker in the other portfolio.
+    c.post(f"/setup/holdings/{acct}/security", data={"ticker": "ITOT", "currency": "USD"})
+    # Missing asset class with nothing to copy it from → error, nothing written.
+    c.post(f"/setup/holdings/{acct}/security", data={"ticker": "NEWX", "currency": "CAD"})
+    # Same ticker again → no duplicate.
+    c.post(f"/setup/holdings/{acct}/security", data={"ticker": "zag", "asset_class_name": "Bonds"})
+    with app.app_context():
+        secs = {s.ticker: s for s in Security.query.filter_by(portfolio_id=ids["p"])}
+        assert set(secs) == {"ZAG", "ITOT"}
+        assert secs["ZAG"].name == "BMO Aggregate Bond Index ETF" and secs["ZAG"].last_price == 14.10
+        assert secs["ZAG"].asset_class.name == "Bonds"
+        assert secs["ITOT"].asset_class.name == "US Equity" and secs["ITOT"].currency == "USD"
+        assert secs["ITOT"].last_price == 130.0                        # same listing priced elsewhere
+        assert Holding.query.filter_by(account_id=acct).count() == 0    # no holdings created
+        db.session.add(AssetClass(portfolio_id=ids["p"], name="Gold")); db.session.commit()
+    page = c.get(f"/setup/holdings/{acct}").get_data(as_text=True)
+    assert "Securities to buy" in page and "ZAG" in page and "ITOT" in page
+    targets = c.get("/setup/targets").get_data(as_text=True)
+    row = lambda name: targets[targets.index(f"<strong>{name}</strong>"):].split("</tr>")[0]
+    gold, bonds = row("Gold"), row("Bonds")
+    assert "nothing to buy" in gold and "nothing to buy" not in bonds
+    # The lookup API pre-fills the name of a ticker that's in the sheet but not a security here.
+    with app.app_context():
+        u = db.session.get(User, ids["user"])
+        u.price_sheet_snapshot = json.dumps({"tickers": ["TSE:VCN"], "priced": [], "names": {"TSE:VCN": "Vanguard FTSE Canada"}})
+        db.session.commit()
+    j = c.get("/api/securities/lookup?ticker=VCN").get_json()
+    assert j == {"found": None, "currency": "CAD", "name": "Vanguard FTSE Canada"}
+
+
 def test_book_value_only_in_taxable_accounts(fresh_user):
     """ACB means nothing in a registered account: it isn't stored there, is cleared when an
     account becomes registered (or by the startup migration), and is asked for when an
