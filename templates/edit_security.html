@@ -46,6 +46,35 @@
             <small class="help">For an account the provider trades inside, held here as one security priced at $1 a unit. The superficial-loss check is skipped for it, and you'll be asked for the date of its book value, since the provider's tax-loss harvesting changes that without any trade recorded here.</small>
         </div>
 
+        <fieldset class="migration">
+            <legend>Phase out (gradual switch to another security)</legend>
+            <div class="form-group" style="max-width: 24rem;">
+                <label for="replaced_by_id">Replace {{ security.ticker }} with</label>
+                <select name="replaced_by_id" id="replaced_by_id" data-migration-select>
+                    <option value="">– keep {{ security.ticker }} (no phase-out) –</option>
+                    {% for s in replacement_options %}
+                    <option value="{{ s.id }}" {% if s.id == security.replaced_by_id %}selected{% endif %}>{{ s.ticker }}{% if s.name %} – {{ s.name }}{% endif %}</option>
+                    {% endfor %}
+                </select>
+                {% if not replacement_options %}<small class="help">Add the new security to {{ security.asset_class.name if security.asset_class else 'this asset class' }} first (Securities → Add).</small>{% endif %}
+                {% if security.replacing %}<small class="help">{{ security.ticker }} is the replacement for {{ security.replacing|map(attribute='ticker')|join(', ') }}.</small>{% endif %}
+            </div>
+            <p class="help">While phasing out, {{ security.ticker }} is never bought – new money goes to the replacement – and
+                when something in this asset class has to be sold, {{ security.ticker }} goes first <em>unless</em> selling it
+                would realise more capital gain than selling something else. Taxable holdings are never sold just to switch.</p>
+            <div class="stack" data-migration-options>
+                <label class="check"><input type="checkbox" name="migrate_registered_now" {% if security.migrate_registered_now %}checked{% endif %}>
+                    Switch registered accounts now</label>
+                <small class="help">Sells all of {{ security.ticker }} in RRSPs, TFSAs etc. in the next plan and buys the
+                    replacement – there's no tax on switching there, only the trading cost.</small>
+                <label class="check" style="margin-top: 0.75rem;"><input type="checkbox" name="migration_sl_link" {% if security.migration_sl_link is not false %}checked{% endif %}>
+                    Treat the two as identical for the superficial-loss rule</label>
+                <small class="help">Two funds tracking the same index may be "identical property" to the CRA. When ticked, selling
+                    {{ security.ticker }} at a loss in a taxable account is never paired with buying the replacement within 30 days.
+                    Untick only if you're confident they aren't identical (e.g. different indexes) – check with a tax professional.</small>
+            </div>
+        </fieldset>
+
         <div class="btn-row">
             <button type="submit" class="btn btn-primary">Save security</button>
             <a href="{{ url_for('securities') }}" class="btn btn-ghost">Cancel</a>

@@ -352,3 +352,89 @@ def test_illiquid_underweight_can_still_be_bought():
     res = solve(p)
     assert any(t.action == "BUY" and t.security_id == 105 for t in res.trades)
     assert res.effective_targets[5] == 5
+
+
+# --------------------------------------------------------------------------- #
+# Phasing out one security in favour of another (gradual migration)
+# --------------------------------------------------------------------------- #
+VEQT_OLD, XEQT_NEW = 20, 21
+EQ = CA
+
+
+def _migration_problem(accounts, positions, *, switch_now=False, sl_link=True, targets=None, **kw):
+    secs = [SecurityIn(VEQT_OLD, "OLD", EQ, 40, 40, "CAD", replaced_by=XEQT_NEW, switch_registered_now=switch_now,
+                       sl_group=VEQT_OLD if sl_link else None),
+            SecurityIn(XEQT_NEW, "NEW", EQ, 30, 30, "CAD", sl_group=VEQT_OLD if sl_link else None),
+            SecurityIn(ZAG, "ZAG", BD, 14, 14, "CAD")]
+    kw.setdefault("buy_levels", {(a.id, s.id): 0 for a in accounts for s in secs})
+    return Problem(accounts=accounts, securities=secs, positions=positions,
+                   targets=targets or {EQ: 80, BD: 20}, class_names=NAMES, **kw)
+
+
+def test_phased_out_security_is_never_bought():
+    # Equity under target with cash to spend: the buy goes to the replacement.
+    accts = [AccountIn(TFSA, "TFSA", False, 5000)]
+    pos = [PositionIn(TFSA, VEQT_OLD, 200), PositionIn(TFSA, ZAG, 400)]
+    res = solve(_migration_problem(accts, pos))
+    buys = {t.security_id for t in trades_by(res, "BUY")}
+    assert VEQT_OLD not in buys and XEQT_NEW in buys
+    assert any("Phasing out OLD → NEW" in n for n in res.notes)
+
+
+def test_sells_go_to_the_phased_out_security_first():
+    # Equity over target in a registered account holding both: trim the old one.
+    accts = [AccountIn(TFSA, "TFSA", False, 0)]
+    pos = [PositionIn(TFSA, VEQT_OLD, 300), PositionIn(TFSA, XEQT_NEW, 400), PositionIn(TFSA, ZAG, 100)]
+    res = solve(_migration_problem(accts, pos))
+    sells = trades_by(res, "SELL")
+    assert sells and {t.security_id for t in sells} == {VEQT_OLD}
+
+
+def test_tax_still_wins_over_migration_in_taxable_accounts():
+    # Old has a large gain, new has none: trimming equity sells the new one, not the old.
+    accts = [AccountIn(NR, "Non-Reg", True, 0)]
+    pos = [PositionIn(NR, VEQT_OLD, 300, book_value=3000), PositionIn(NR, XEQT_NEW, 400, book_value=12000),
+           PositionIn(NR, ZAG, 100, book_value=1400)]
+    res = solve(_migration_problem(accts, pos))
+    sells = {t.security_id for t in trades_by(res, "SELL")}
+    assert VEQT_OLD not in sells and XEQT_NEW in sells
+    assert any("in taxable accounts" in n for n in res.notes)
+
+
+def test_gradual_mode_adds_no_trades_to_a_balanced_portfolio():
+    accts = [AccountIn(TFSA, "TFSA", False, 0)]
+    pos = [PositionIn(TFSA, VEQT_OLD, 200), PositionIn(TFSA, ZAG, 143)]     # 8000 / 2002 ≈ 80/20
+    res = solve(_migration_problem(accts, pos))
+    assert res.trades == []
+    note = next(n for n in res.notes if n.startswith("Phasing out OLD"))
+    assert "in registered accounts" in note and "switch registered accounts now" in note
+
+
+def test_switch_registered_now_sells_all_and_buys_the_replacement():
+    accts = [AccountIn(TFSA, "TFSA", False, 0), AccountIn(NR, "Non-Reg", True, 0)]
+    pos = [PositionIn(TFSA, VEQT_OLD, 200), PositionIn(TFSA, ZAG, 143),
+           PositionIn(NR, VEQT_OLD, 100, book_value=2000)]
+    res = solve(_migration_problem(accts, pos, switch_now=True,
+                                   targets={EQ: 85.7, BD: 14.3}))
+    tfsa = {(t.action, t.security_id): t.quantity for t in trades_by(res, account=TFSA)}
+    assert tfsa[("SELL", VEQT_OLD)] == 200
+    assert ("BUY", XEQT_NEW) in tfsa
+    assert not trades_by(res, account=NR)              # taxable stays gradual
+
+
+def test_replacement_counts_as_identical_for_superficial_loss():
+    # Bonds can only be bought in the taxable account, so filling them means selling OLD
+    # there – at a loss. The TFSA's cash would go to NEW. Treated as identical property,
+    # both can't happen in one plan (the loss would be superficial).
+    accts = [AccountIn(NR, "Non-Reg", True, 0), AccountIn(TFSA, "TFSA", False, 12000)]
+    pos = [PositionIn(NR, VEQT_OLD, 300, book_value=15000)]
+    lv = {(NR, VEQT_OLD): 0, (NR, XEQT_NEW): 0, (NR, ZAG): 0, (TFSA, XEQT_NEW): 0}
+    outcome = {}
+    for sl_link in (True, False):
+        res = solve(_migration_problem(accts, pos, sl_link=sl_link, targets={EQ: 50, BD: 50}, buy_levels=lv))
+        loss_sold = any(t.security_id == VEQT_OLD and t.action == "SELL" and (t.realized_gain or 0) < 0
+                        for t in res.trades)
+        new_bought = any(t.security_id == XEQT_NEW and t.action == "BUY" for t in res.trades)
+        outcome[sl_link] = (loss_sold, new_bought)
+    assert outcome[False] == (True, True)            # not identical: switch and fill bonds in one go
+    assert outcome[True] != (True, True)             # identical: never both in the same plan

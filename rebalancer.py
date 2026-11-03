@@ -98,6 +98,7 @@ def build_problem(portfolio, exchange_rates, allow_taxable_sells: bool) -> tuple
     if unpriced:
         notes.append("No price for " + ", ".join(sorted(unpriced)) +
                      " (not held and not in your price sheet) – they can't be bought this time.")
+    sl_links = _apply_migrations(sec_in, securities, notes)
 
     acc_in = [AccountIn(
         id=a.id, name=a.name, taxable=not a.is_registered, currency=a.currency or base,
@@ -125,6 +126,12 @@ def build_problem(portfolio, exchange_rates, allow_taxable_sells: bool) -> tuple
                      "(treated as already redeemed).")
 
     recent_buys, recent_loss_sells = _superficial_loss_history(portfolio, notes)
+    # A phased-out security and its replacement treated as identical property: a recent
+    # buy or loss sale of either one counts for both.
+    for pair in sl_links:
+        for seen in (recent_buys, recent_loss_sells):
+            if seen & set(pair):
+                seen |= set(pair)
 
     problem = Problem(
         accounts=acc_in, securities=sec_in, positions=pos_in,
@@ -140,6 +147,33 @@ def build_problem(portfolio, exchange_rates, allow_taxable_sells: bool) -> tuple
         base_currency=portfolio.base_currency or 'CAD',
     )
     return problem, notes
+
+
+def _apply_migrations(sec_in, securities, notes) -> list[tuple[int, int]]:
+    """Mark phased-out securities on the optimiser's inputs. A migration only takes
+    effect when its replacement can be bought this time (priced, same targeted asset
+    class); otherwise the old security is treated normally and a note says why.
+    Returns the (old, new) id pairs to treat as identical for the superficial-loss rule."""
+    by_id = {s.id: s for s in sec_in}
+    links = []
+    for sec in securities:
+        if not sec.replaced_by_id or sec.id not in by_id:
+            continue
+        old, new = by_id[sec.id], by_id.get(sec.replaced_by_id)
+        new_row = sec.replaced_by
+        new_t = new_row.ticker if new_row else "its replacement"
+        if new is None or new.asset_class_id != old.asset_class_id:
+            reason = ("has no price" if new_row and new_row.asset_class_id == sec.asset_class_id
+                      else "isn't in the same asset class")
+            notes.append(f"Phasing out {sec.ticker} is paused: {new_t} {reason}, so {sec.ticker} "
+                         "is treated as a normal holding this time.")
+            continue
+        old.replaced_by = new.id
+        old.switch_registered_now = bool(sec.migrate_registered_now)
+        if sec.migration_sl_link is not False:
+            old.sl_group = new.sl_group = old.id
+            links.append((old.id, new.id))
+    return links
 
 
 def _managed_book_value_notes(portfolio) -> list[str]:

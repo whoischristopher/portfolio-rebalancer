@@ -74,6 +74,19 @@ Securities and Targets can be edited on their own pages.
 - **Provider-managed** (e.g. a direct-indexing account held as one security at $1/unit): traded like any other
   taxable position, but the superficial-loss checks are skipped for it – the provider's underlying trades are the
   real dispositions – and its book value needs regular updates from your statements (see above).
+- **Phasing out (gradual migration)** – Edit security → *Replace with*: move from one security to another in the
+  same asset class (e.g. a less tax-efficient ETF to a more efficient one) without a big taxable sale:
+  - the old security is **never bought** – new money in that class goes to the replacement;
+  - when something in the class has to be sold, the old one goes **first, unless** selling it would realise more
+    capital gain than selling something else – tax still comes first, and taxable holdings are never sold just to
+    switch (selling them is a taxable disposition whatever the reason);
+  - **Switch registered accounts now** (optional): sell all of it in RRSPs, TFSAs etc. in the next plan and buy the
+    replacement – no tax there, only the trading cost;
+  - **Treat as identical for the superficial-loss rule** (default on): two funds tracking the same index may be
+    identical property, so a loss sale of one and a purchase of the other within 30 days are kept apart, and recent
+    trades of either count for both. Untick only if you're sure they aren't (check with a tax professional).
+  - Each plan says how much was moved and what's left, split registered/taxable. A migration pauses (with a note) if
+    the replacement has no price. Deleting the replacement ends the migration.
 
 ## Prices and exchange rates
 - **Price sheet:** a Google Sheet with tickers in column A (e.g. `TSE:XEC`, `NYSEARCA:ITOT`; the exchange prefix is
@@ -109,6 +122,7 @@ It minimises, in order of weight:
 - Number of positions – discourages new positions and closes small scattered ones when cheap
 - Buying in lower-priority accounts
 - Idle cash
+- A tiny tie-breaker toward selling a security that's being phased out (never enough to add a trade)
 
 Two stages: first the cheapest plan that brings every class inside its band (a portfolio already within its bands
 gets no trades). Then, if trades are needed anyway, the same number of trades with no extra realised gain is re-sized

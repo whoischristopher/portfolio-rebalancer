@@ -319,8 +319,18 @@ class Security(db.Model):
     # underlying stock trades are the real dispositions.
     is_managed = db.Column(db.Boolean, default=False)
     last_price = db.Column(db.Float, nullable=True)   # THE price (security currency); holdings mirror it
+    # Gradual migration: this security is being phased out in favour of replaced_by (same
+    # portfolio and asset class). It's never bought, and is the first thing sold in its
+    # class when that's no worse for tax. migrate_registered_now: sell it outright in
+    # registered accounts (no tax there). migration_sl_link: treat the pair as identical
+    # property for the superficial-loss rule (the conservative default).
+    replaced_by_id = db.Column(db.Integer, db.ForeignKey('securities.id'), nullable=True)
+    migrate_registered_now = db.Column(db.Boolean, default=False)
+    migration_sl_link = db.Column(db.Boolean, default=True)
 
     # Relationship links
+    replaced_by = db.relationship('Security', remote_side=[id], foreign_keys=[replaced_by_id],
+                                  backref=db.backref('replacing', lazy=True))
     portfolio = db.relationship('Portfolio', back_populates='securities')
     asset_class = db.relationship('AssetClass', back_populates='securities')
     preferences = db.relationship('SecurityPreference', back_populates='security', cascade='all, delete-orphan')
