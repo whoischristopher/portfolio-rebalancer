@@ -7,6 +7,13 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 ## [Unreleased]
 
 ### Added
+- **Quick start, step 2: "Securities to buy".** Add a security you don't hold yet – e.g. the fund for a new asset
+  class – without creating a holding, so the rebalancer has something to buy. Lists the portfolio's unheld
+  securities. Blank fields are copied from the same ticker in your other portfolios, then from the price sheet.
+- **Step 3 flags targets with nothing to buy:** an asset class with no securities is marked, with a link back.
+- **Security names from the price sheet.** An optional column C (`=IFERROR(GOOGLEFINANCE(A2,"name"),"")`) fills in
+  names that are blank on each price read and pre-fills the name of a new ticker already in the sheet. Typed names are
+  never overwritten. The sheet is still read-only; **Copy rows for the sheet** now includes the column C formula.
 - **Phase out a security (gradual migration).** On Edit security, pick a replacement in the same asset class. The
   old security is never bought; when something in its class has to be sold it goes first, unless selling it would
   realise more gain than the alternative (tax stays the priority, so taxable holdings aren't sold just to switch).

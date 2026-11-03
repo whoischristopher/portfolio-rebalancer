@@ -135,8 +135,9 @@
       prefill(row, info);
       if (note) note.textContent = `Details copied from ${info.ticker} in your other portfolio – check them.`;
     } else {
-      prefill(row, { currency: info.currency });
-      if (note) note.textContent = 'Asset class is required; a new name creates that class. Price is optional if your price sheet has this ticker.';
+      prefill(row, { currency: info.currency, name: info.name });
+      if (note) note.textContent = (info.name ? 'Name taken from your price sheet. ' : '')
+        + 'Asset class is required; a new name creates that class. Price is optional if your price sheet has this ticker.';
     }
   }
 

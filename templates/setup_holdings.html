@@ -77,6 +77,60 @@
             {{ E.holding_rows(account, securities, asset_classes, prefill, 1 if account.holdings else 3) }}
         </div>
 
+        {# Its fields belong to #add-sec-form (below, outside this form) via the form="" attribute,
+           so the card can sit here without nesting forms. #}
+        <details class="card to-buy" id="to-buy" {% if unheld %}open{% endif %}>
+            <summary><h2>Securities to buy</h2>
+                <span class="card-sub">{% if unheld %}{{ unheld|length }} you don't hold yet{% else %}optional – for funds you plan to buy but don't own yet{% endif %}</span>
+            </summary>
+            <p class="help" style="margin: 0.5rem 0 1rem;">The rebalancer can only buy securities it knows about. If a target asset class
+                (e.g. Bonds) has nothing in it yet, add the fund you'd buy here – no holding is created.
+                A security you add here is shared by every account in this portfolio.</p>
+            {% if unheld %}
+            <table style="margin-bottom: 1.25rem;">
+                <thead><tr><th>Security</th><th>Asset class</th><th class="text-right">Price</th></tr></thead>
+                <tbody>
+                {% for s in unheld %}
+                <tr>
+                    <td><strong>{{ s.ticker }}</strong><span class="sub">{{ s.name or '' }}</span></td>
+                    <td>{{ s.asset_class.name if s.asset_class else '—' }}</td>
+                    <td class="text-right num">{% if s.last_price %}{{ s.last_price|money(s.currency) }}{% else %}<span class="badge badge-warn">no price</span>{% endif %}</td>
+                </tr>
+                {% endfor %}
+                </tbody>
+            </table>
+            {% endif %}
+            <div class="field-grid add-security-grid">
+                <div class="form-group">
+                    <label for="ns_ticker">Ticker</label>
+                    <input type="text" id="ns_ticker" name="ticker" form="add-sec-form" required placeholder="e.g. ZAG"
+                           autocomplete="off" autocapitalize="characters" spellcheck="false">
+                </div>
+                <div class="form-group">
+                    <label for="ns_name">Name</label>
+                    <input type="text" id="ns_name" name="name" form="add-sec-form" placeholder="Optional" title="Left blank, the name comes from your other portfolios or the price sheet">
+                </div>
+                <div class="form-group">
+                    <label for="ns_ac">Asset class</label>
+                    <input type="text" id="ns_ac" name="asset_class_name" form="add-sec-form" list="ac-list" required
+                           placeholder="Pick or type one" autocomplete="off">
+                </div>
+                <div class="form-group">
+                    <label for="ns_ccy">Currency</label>
+                    <select id="ns_ccy" name="currency" form="add-sec-form">
+                        {% for c in currencies %}<option value="{{ c }}" {% if c == (account.currency or 'CAD') %}selected{% endif %}>{{ c }}</option>{% endfor %}
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label for="ns_price">Price</label>
+                    <input type="text" id="ns_price" name="price" form="add-sec-form" inputmode="decimal" placeholder="Optional">
+                </div>
+                <div class="form-group">
+                    <button type="submit" form="add-sec-form" class="btn btn-secondary">Add security</button>
+                </div>
+            </div>
+        </details>
+
         <div class="wizard-foot">
             <a href="{{ url_for('setup_accounts') }}" class="btn btn-ghost">Back to accounts</a>
             <div class="btn-row">
@@ -87,5 +141,6 @@
             </div>
         </div>
     </form>
+    <form id="add-sec-form" method="POST" action="{{ url_for('setup_add_security', account_id=account.id) }}"></form>
 </div>
 {% endblock %}

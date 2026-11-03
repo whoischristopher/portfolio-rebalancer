@@ -38,7 +38,7 @@ def priced(monkeypatch):
             raise appmod.PriceSheetError(sheet["error"])
         from services.prices import SheetPrices
         p = sheet["prices"]
-        return SheetPrices(p, getattr(p, "tickers", None))     # keep column A's full ticker list
+        return SheetPrices(p, getattr(p, "tickers", None), getattr(p, "names", None))   # keep columns A and C
     monkeypatch.setattr(appmod, "fetch_prices_from_user_sheet", fake_fetch)
 
     with app.app_context():
@@ -204,6 +204,25 @@ def test_sheet_gaps_banner_after_a_read(priced):
     assert "TSE:OLD" not in page                                  # unused rows: Settings only
     assert "TSE:OLD" in c.get("/settings").get_data(as_text=True)
     assert "Not in your price sheet" not in c.get("/accounts").get_data(as_text=True)
+
+
+def test_refresh_fills_blank_names_from_column_c(priced):
+    app, db, c, ids, sheet = priced
+    from models import Security
+    from services.prices import SheetPrices
+    with app.app_context():
+        db.session.get(Security, ids["priv"]).name = "My private fund"
+        db.session.commit()
+    sheet["prices"] = SheetPrices({"TSE:XEQT": 31.0}, ["TSE:XEQT", "PRIV"],
+                                  {"TSE:XEQT": "iShares Core Equity ETF Portfolio", "PRIV": "Something else"})
+    c.post("/update_prices")
+    with app.app_context():
+        assert db.session.get(Security, ids["xeqt"]).name == "iShares Core Equity ETF Portfolio"   # was blank
+        assert db.session.get(Security, ids["priv"]).name == "My private fund"                     # typed: kept
+        x = db.session.get(Security, ids["xeqt"]); x.name = "Mine"; db.session.commit()
+    c.post("/update_prices")
+    with app.app_context():
+        assert db.session.get(Security, ids["xeqt"]).name == "Mine"                                 # never overwritten
 
 
 def test_no_banner_before_the_first_read(priced):

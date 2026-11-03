@@ -51,6 +51,19 @@ def test_parse_sheet_rows_keeps_tickers_without_a_price():
                           ["TSE:XEC", 30.5]])
     assert dict(p) == {"TSE:XEC": 30.5}
     assert p.tickers == ["TSE:XEC", "TSE:BAD", "NYSEARCA:ITOT"]     # header, blanks and duplicates dropped
+    assert p.names == {}                                             # no column C → no names
+
+
+def test_parse_sheet_rows_reads_names_from_column_c():
+    from services.prices import parse_sheet_rows, sheet_name_for
+    p = parse_sheet_rows([["Ticker", "Price", "Name"],
+                          ["TSE:XEQT", 31.2, "iShares Core Equity ETF Portfolio"],
+                          ["TSE:BAD", "#N/A", "#N/A"], ["TSE:LOAD", 5, "Loading..."], ["TSE:ZAG", 14.1, ""]])
+    assert p.names == {"TSE:XEQT": "iShares Core Equity ETF Portfolio"}   # errors and blanks ignored
+    assert sheet_name_for("xeqt", p.names) == "iShares Core Equity ETF Portfolio"   # prefix ignored
+    assert sheet_name_for("XEQT.TO", p.names) == "iShares Core Equity ETF Portfolio"
+    assert sheet_name_for("ZAG", p.names) is None
+    assert sheet_name_for("", p.names) is None
 
 
 def test_google_finance_symbol_guesses():
@@ -87,5 +100,6 @@ def test_sheet_coverage_all_good():
 def test_sheet_rows_are_tab_separated_with_a_row_relative_formula():
     from services.prices import sheet_rows_for
     rows = sheet_rows_for([NS(ticker="ZAG", currency="CAD"), NS(ticker="ITOT", currency="USD")]).split("\n")
-    assert rows == ['TSE:ZAG\t=GOOGLEFINANCE(INDIRECT("A"&ROW()),"price")',
-                    'ITOT\t=GOOGLEFINANCE(INDIRECT("A"&ROW()),"price")']
+    name = '=IFERROR(GOOGLEFINANCE(INDIRECT("A"&ROW()),"name"),"")'
+    assert rows == ['TSE:ZAG\t=GOOGLEFINANCE(INDIRECT("A"&ROW()),"price")\t' + name,
+                    'ITOT\t=GOOGLEFINANCE(INDIRECT("A"&ROW()),"price")\t' + name]
