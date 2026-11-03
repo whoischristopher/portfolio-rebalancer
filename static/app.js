@@ -153,6 +153,15 @@
     if (e.target.matches('.f-ticker')) checkTicker(e.target.closest('.entry-row'));
   });
 
+  /* ---------- Edit security: phase-out options only matter with a replacement ---------- */
+  const migSel = document.querySelector('[data-migration-select]');
+  if (migSel) {
+    const opts = document.querySelector('[data-migration-options]');
+    const sync = () => opts && opts.classList.toggle('hidden', !migSel.value);
+    migSel.addEventListener('change', sync);
+    sync();
+  }
+
   /* ---------- Toggle panels ---------- */
   document.addEventListener('click', (e) => {
     const t = e.target.closest('[data-toggle]');

@@ -6,6 +6,15 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+### Added
+- **Phase out a security (gradual migration).** On Edit security, pick a replacement in the same asset class. The
+  old security is never bought; when something in its class has to be sold it goes first, unless selling it would
+  realise more gain than the alternative (tax stays the priority, so taxable holdings aren't sold just to switch).
+  Options: **switch registered accounts now** (sell it outright where there's no tax) and **treat as identical for
+  the superficial-loss rule** (on by default – recent trades of either count for both, and a loss sale of one is never
+  paired with a purchase of the other). Plans note what was moved and what's left; the Securities page shows a
+  "phasing out → X" badge. New columns are added on startup.
+
 ## [1.1.0] - 2026-11-02
 
 > **Upgrading:** back up `data/portfolio.db`, then `git pull && docker compose up -d --build`. The image moves to
