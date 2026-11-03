@@ -33,6 +33,15 @@
                 shows what selling in a non-registered account would fix and the capital gain it would realise.
                 Gains are estimated from each holding's book value (set it on the Holdings page).
             </small>
+            <label class="check" style="margin-top: 0.6rem;"><input type="checkbox" name="allow_loss_sells" {% if portfolio.allow_loss_sells is not false %}checked{% endif %}>
+                Sell non-registered holdings at a loss without asking</label>
+            <small style="color: var(--muted);">
+                In every mode, when something has to be sold the plan prefers a non-registered holding at a loss over a
+                registered one: a loss in an RRSP or TFSA has no tax value, while a non-registered one offsets capital
+                gains (this year, the previous three, or later). This box lets <em>Never</em> and <em>Ask</em> do that
+                too, since such a sale realises no gain. It never adds trades. Holdings with no book value, and
+                provider-managed ones, never count as at a loss.
+            </small>
         </div>
         <div class="form-group">
             <label for="balanced_threshold">Balanced Allocation Threshold (%)</label>

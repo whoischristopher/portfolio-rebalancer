@@ -60,6 +60,9 @@ class Portfolio(db.Model):
     precision_rebalancing = db.Column(db.Boolean, default=True)   # = fractional final buy per account
     trade_cost = db.Column(db.Float, default=0.0)                 # per trade, in base currency
     taxable_sell_mode = db.Column(db.String(10), default='ask')   # 'never' | 'ask' | 'allow'
+    # In Never/Ask mode, still allow selling a taxable holding that's at a loss (it realises
+    # no gain) – and when something has to be sold, prefer it over a registered holding.
+    allow_loss_sells = db.Column(db.Boolean, default=True)
     last_plan_summary = db.Column(db.Text)                        # JSON from rebalancer.generate_plan
     # Optional: also respect the superficial-loss rule against trades recorded in this
     # other portfolio (e.g. your spouse's – an affiliated person). NULL = off (default).

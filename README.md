@@ -129,7 +129,7 @@ database adapter: `rebalancer.py`.
 
 It minimises, in order of weight:
 - Drift outside the balanced band (Settings) – drift inside the band is nearly free, so it doesn't chase exact targets
-- Capital gains realised in taxable accounts (from book value; losses aren't penalised)
+- Capital gains realised in taxable accounts (from book value; losses aren't penalised – see stage 3 below)
 - Number of trades (plus the per-trade cost from Settings)
 - Number of positions – discourages new positions and closes small scattered ones when cheap
 - Buying in lower-priority accounts
@@ -138,13 +138,21 @@ It minimises, in order of weight:
 
 Two stages: first the cheapest plan that brings every class inside its band (a portfolio already within its bands
 gets no trades). Then, if trades are needed anyway, the same number of trades with no extra realised gain is re-sized
-to land as close to target as possible – furthest-off classes first.
+to land as close to target as possible – furthest-off classes first. Finally (stage 3), with that plan's shape frozen
+– same number of trades, no more realised gain, every asset class ending in the same place – it re-picks *who* sells,
+preferring a non-registered holding at a loss over a registered one: a loss in an RRSP or TFSA has no tax value, a
+non-registered one offsets capital gains this year, the previous three, or later. This never adds trades, and a loss
+sale it picks is never paired with a buy of another security in the same asset class (the two could be identical
+property). Holdings with no book value, and provider-managed ones, never count as at a loss. The plan lists the loss
+sales and reminds you not to rebuy them – in any account, yours or your spouse's, DRIPs included – for 30 days.
 
 Always respected:
 - Each account funds its own buys; no account's cash goes negative; FX at the spot rate (you're told when an account
   needs to convert currency before buying)
 - Taxable sells: **Never / Ask / Allow** (Settings). *Ask* plans without them and, if something is still outside its
-  band, offers the alternative along with the gain it would realise
+  band, offers the alternative along with the gain it would realise. **Sell non-registered holdings at a loss
+  without asking** (Settings, on by default) lets *Never* and *Ask* still sell a taxable holding that's at a loss,
+  since that realises no gain
 - Superficial-loss rule: no loss sale and repurchase of the same security in one plan, no buy within 30 days of a
   recorded loss sale, no loss sale within 30 days of a recorded buy. Only trades executed in this app are known.
   Optionally also checked against a linked portfolio (Settings, default off)

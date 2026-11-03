@@ -471,3 +471,58 @@ def test_phase_out_only_in_some_accounts():
     # The TFSA consolidates into NEW (no tax there); the RRSP's OLD isn't part of the phase-out.
     note = next(n for n in res.notes if n.startswith("Phasing out OLD"))
     assert "fully switched" in note
+
+
+# --------------------------------------------------------------------------- #
+# Stage 3: prefer selling taxable holdings at a loss over registered ones
+# --------------------------------------------------------------------------- #
+def _loss_problem(**kw):
+    # Bonds are over target and equity under. Either account can fix it (sell ZAG, buy XIC);
+    # the taxable account's ZAG is at a loss (book 2000, worth 1400), the TFSA's has no tax effect.
+    accts = [AccountIn(TFSA, "TFSA", False, 0), AccountIn(NR, "Non-Reg", True, 0)]
+    pos = [PositionIn(TFSA, ZAG, 100), PositionIn(TFSA, XIC, 50),
+           PositionIn(NR, ZAG, 100, book_value=2000), PositionIn(NR, XIC, 50, book_value=2000)]
+    lv = {(a, s): 0 for a in (TFSA, NR) for s in (XIC, ZAG)}
+    kw.setdefault("allow_taxable_sells", True)
+    return problem(accts, pos, {CA: 70, BD: 30}, buy_levels=lv, **kw)
+
+
+def test_prefers_selling_the_taxable_loser():
+    res = solve(_loss_problem())
+    sells = trades_by(res, "SELL")
+    assert sells and {t.account_id for t in sells} == {NR}
+    assert res.realized_loss > 0 and res.realized_gain < 0
+    assert any("capital losses" in n and "30 days" in n for n in res.notes)
+    assert not [t for t in trades_by(res, "BUY") if t.security_id == ZAG]     # no buy-back
+
+
+def test_loss_preference_adds_no_trades():
+    base = solve(_loss_problem(prefer_loss_sales=False))
+    res = solve(_loss_problem())
+    assert len(res.trades) <= len(base.trades)
+    assert {k: round(v, 1) for k, v in res.drift_after.items()} == pytest.approx(
+        {k: round(v, 1) for k, v in base.drift_after.items()}, abs=0.15)
+
+
+def test_loss_sales_allowed_when_taxable_sells_are_not():
+    # Ask/Never mode with "loss sales without asking": the loser may be sold, a gain may not.
+    res = solve(_loss_problem(allow_taxable_sells=False, allow_loss_sells=True))
+    assert {t.account_id for t in trades_by(res, "SELL")} == {NR}
+    res = solve(_loss_problem(allow_taxable_sells=False, allow_loss_sells=False))
+    assert NR not in {t.account_id for t in trades_by(res, "SELL")}
+
+
+def test_balanced_portfolio_is_not_traded_for_a_loss():
+    accts = [AccountIn(NR, "Non-Reg", True, 0)]
+    pos = [PositionIn(NR, ZAG, 300, book_value=6000), PositionIn(NR, XIC, 245, book_value=9000)]
+    res = solve(problem(accts, pos, {CA: 70, BD: 30}, allow_loss_sells=True))     # 9800 / 4200 = 70/30
+    assert res.trades == []
+
+
+def test_managed_sleeve_never_counts_as_a_loss_sale():
+    secs = securities()
+    secs[4] = SecurityIn(ZAG, "ZAG", BD, 14, 14, "CAD", managed=True)
+    p = _loss_problem(allow_taxable_sells=False, allow_loss_sells=True)
+    p.securities = secs
+    res = solve(p)
+    assert NR not in {t.account_id for t in trades_by(res, "SELL") if t.security_id == ZAG}
