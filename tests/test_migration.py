@@ -142,7 +142,11 @@ def test_loss_switch_is_offered_then_included(mig):
     assert "switch a phased-out holding now to realise a loss" in page and "OLD in Joint → NEW" in page
     c.post("/rebalance/generate", data={"loss_switch": "1"})
     plan = _plan(app, ids)
-    assert any(a == ids["nr"] and act == "SELL" and s == ids["old"] and g < 0 for a, act, s, g in plan)
+    assert (ids["nr"], "SELL", ids["old"], 100) in plan                       # the whole holding
+    with app.app_context():
+        from models import RebalanceTransaction as T
+        sell = T.query.filter_by(portfolio_id=ids["p"], account_id=ids["nr"], action="SELL", executed=False).one()
+        assert round(sell.realized_gain) == -1200
     assert any(a == ids["nr"] and act == "BUY" and s == ids["new"] for a, act, s, _ in plan)
     assert not [t for t in plan if t[0] == ids["tfsa"] and t[1] == "SELL" and t[2] == ids["old"]]
     page = c.get("/rebalance").get_data(as_text=True)
