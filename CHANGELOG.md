@@ -6,6 +6,22 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+### Changed
+- **Phase-outs happen only as a by-product of rebalancing.** *Switch registered accounts now* is removed (its column
+  is dropped on startup): the old security is never bought and is sold first when its class needs trimming, but never
+  sold just to switch.
+- **No swaps inside an account.** A plan no longer sells one security and buys a different one of the same asset
+  class in the same account – previously the position-count saving could close e.g. XLB in a TFSA and buy ZAG with
+  nothing to rebalance. Merging the same security across accounts still happens.
+
+### Added
+- **Loss switch for phase-outs (opt-in).** When a non-registered holding of a phased-out security is down at least
+  the threshold (Settings, *Phase-out: offer a loss switch from*, default 20% of book value), the Rebalance page
+  offers to sell it now – realising the loss – and buy that account's replacement, with the loss and the extra
+  trades. Accepting re-plans with the switch and keeps it through trade execution; *Plan without it* drops it. Only
+  offered when the pair isn't treated as identical property, and never for holdings bought in the last 30 days,
+  without a book value, or provider-managed. New column added on startup.
+
 ### Added
 - **Prefer selling at a loss in non-registered accounts.** When something has to be sold, the plan now prefers a
   non-registered holding at a loss over a registered one (a loss in an RRSP/TFSA has no tax value). A third optimiser

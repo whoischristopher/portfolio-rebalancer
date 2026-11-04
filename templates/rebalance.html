@@ -119,7 +119,37 @@
         </p>
         <form method="POST" action="{{ url_for('generate_rebalance') }}" style="margin: 0;">
             <input type="hidden" name="taxable" value="allow">
+            {% if plan.loss_switch_accepted %}<input type="hidden" name="loss_switch" value="1">{% endif %}
             <button type="submit" class="btn btn-sm btn-primary">Use the plan with non-registered sells</button>
+        </form>
+    </div>
+    {% endif %}
+    {% if plan.loss_switch_offer %}
+    {% set lo = plan.loss_switch_offer %}
+    <div class="loss-switch-offer" style="padding: 1rem; background: var(--warn-soft); border-left: 4px solid var(--warn); border-radius: 4px; margin-bottom: 1rem;">
+        <strong>Optional: switch a phased-out holding now to realise a loss.</strong>
+        <p style="margin: 0.5rem 0;">These non-registered holdings are down at least {{ '%g'|format(lo.min_pct) }}% from their book value.
+            Selling them now and buying the replacement finishes the phase-out there and realises about
+            <strong>{{ lo.loss|money(none, 0) }}</strong> of capital losses{% if lo.extra_trades %} ({{ lo.extra_trades }} more trade{{ 's' if lo.extra_trades != 1 }}){% endif %}.
+            The rebalance itself doesn't need these trades.</p>
+        <ul style="margin: 0 0 0.75rem 1.1rem;">
+            {% for it in lo["items"] %}
+            <li>{{ it.ticker }} in {{ it.account }} → {{ it.replacement }}: worth {{ it.value|money(none, 0) }}, loss {{ it.loss|money(none, 0) }} ({{ '%.0f'|format(it.loss_pct) }}%)</li>
+            {% endfor %}
+        </ul>
+        <form method="POST" action="{{ url_for('generate_rebalance') }}" style="margin: 0;">
+            <input type="hidden" name="loss_switch" value="1">
+            {% if plan.override %}<input type="hidden" name="taxable" value="{{ plan.override }}">{% endif %}
+            <button type="submit" class="btn btn-sm btn-primary">Use the plan with the loss switch{{ 'es' if lo["items"]|length > 1 }}</button>
+        </form>
+    </div>
+    {% elif plan.loss_switch %}
+    <div style="padding: 0.75rem 1rem; background: var(--surface-2, #f4f4f2); border-radius: 4px; margin-bottom: 1rem;" class="small">
+        Includes the loss switch{{ 'es' if plan.loss_switch|length > 1 }} you accepted:
+        {% for it in plan.loss_switch %}{{ it.ticker }} in {{ it.account }} → {{ it.replacement }}{{ ', ' if not loop.last }}{% endfor %}.
+        <form method="POST" action="{{ url_for('generate_rebalance') }}" style="display: inline; margin-left: 0.5rem;">
+            {% if plan.override %}<input type="hidden" name="taxable" value="{{ plan.override }}">{% endif %}
+            <button type="submit" class="btn btn-sm btn-ghost">Plan without {{ 'them' if plan.loss_switch|length > 1 else 'it' }}</button>
         </form>
     </div>
     {% endif %}

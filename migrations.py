@@ -34,10 +34,10 @@ ADDED_COLUMNS = [
     ('securities', 'is_managed', 'BOOLEAN DEFAULT FALSE'),
     # Gradual migration from one security to another
     ('securities', 'replaced_by_id', 'INTEGER'),
-    ('securities', 'migrate_registered_now', 'BOOLEAN DEFAULT FALSE'),
     ('securities', 'migration_sl_link', 'BOOLEAN DEFAULT TRUE'),
     ('securities', 'phase_out_auto', 'BOOLEAN DEFAULT FALSE'),
     ('portfolios', 'allow_loss_sells', 'BOOLEAN DEFAULT TRUE'),
+    ('portfolios', 'loss_switch_min_pct', 'FLOAT DEFAULT 20'),
     ('holdings', 'book_value_as_of', 'DATE'),
     ('users', 'prices_updated_at', 'DATETIME'),
     ('users', 'price_refresh_minutes', 'INTEGER DEFAULT 15'),
@@ -73,6 +73,7 @@ DROPPED_COLUMNS = [
     ('users', 'trading_costs_enabled'),
     ('accounts', 'priority'), ('accounts', 'notes'),       # never set or read
     ('securities', 'is_public'),                            # had no effect on anything
+    ('securities', 'migrate_registered_now'),               # phase-outs no longer force switches
 ]
 _LEGACY_USER_SETTINGS = ('base_currency', 'balanced_threshold', 'precision_rebalancing', 'trade_cost',
                          'taxable_sell_mode', 'last_plan_summary')

@@ -78,7 +78,7 @@ def env(monkeypatch):
 
     # Re-planning after each trade isn't what these tests are about (and would replace
     # the hand-made trades); keep it a no-op.
-    monkeypatch.setattr(appmod, "_regenerate_plan", lambda override=None: [])
+    monkeypatch.setattr(appmod, "_regenerate_plan", lambda override=None, **kw: [])
     return app, db, c, ids, add_trade
 
 

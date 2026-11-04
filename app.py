@@ -1062,7 +1062,6 @@ def _apply_migration_plan(security, plan):
     db.session.flush()
     db.session.expire(security, ['account_replacements', 'replaced_by'])
     active = security.is_phasing_out
-    security.migrate_registered_now = active and request.form.get('migrate_registered_now') == 'on'
     security.migration_sl_link = request.form.get('migration_sl_link') == 'on' if active else True
 
 
@@ -1261,11 +1260,12 @@ def _plan_summary():
         return None
 
 
-def _regenerate_plan(override=None):
-    """Run the optimiser and remember the summary (and any taxable-sell opt-in)."""
+def _regenerate_plan(override=None, loss_switch=False):
+    """Run the optimiser and remember the summary (and any taxable-sell / loss-switch opt-in)."""
     P = current_portfolio()
-    txns, summary = generate_plan(P, taxable_override=override)
+    txns, summary = generate_plan(P, taxable_override=override, loss_switch=loss_switch)
     summary['override'] = override
+    summary['loss_switch_accepted'] = bool(loss_switch)
     summary['generated_at'] = datetime.utcnow().isoformat() + 'Z'
     summary['prices_as_of'] = (current_user.prices_updated_at.isoformat() + 'Z'
                                if current_user.prices_updated_at else None)
@@ -1279,6 +1279,8 @@ def _regenerate_plan(override=None):
 def generate_rebalance():
     # 'allow' comes from the "include taxable sells" button on the Ask-mode offer
     override = request.form.get('taxable') if request.form.get('taxable') in ('allow', 'never') else None
+    # '1' comes from the "include the loss switches" button on the loss-switch offer
+    loss_switch = request.form.get('loss_switch') == '1'
     # Share counts and cash use come straight from prices, so don't plan on stale ones.
     if prices_stale(current_user):
         try:
@@ -1287,7 +1289,7 @@ def generate_rebalance():
             db.session.rollback()
             flash(f'Prices could not be updated ({exc}) – the plan uses the last prices you have.', 'warning')
     try:
-        txns = _regenerate_plan(override)
+        txns = _regenerate_plan(override, loss_switch=loss_switch)
         flash(f'Generated {len(txns)} rebalance transactions', 'success')
     except Exception as exc:
         log.exception('Error generating rebalance plan')
@@ -1301,7 +1303,7 @@ def generate_rebalance():
 def _regenerate_after_change(message):
     try:
         prev = _plan_summary() or {}
-        _regenerate_plan(prev.get('override'))
+        _regenerate_plan(prev.get('override'), loss_switch=bool(prev.get('loss_switch_accepted')))
         flash(message, 'success')
     except Exception as exc:
         log.exception('Plan regeneration failed: %s', exc)
@@ -1547,7 +1549,7 @@ def execute_rebalance_transaction(transaction_id):
         # Regen is best-effort — don't let it mask the successful trade
         try:
             prev = _plan_summary() or {}
-            _regenerate_plan(prev.get('override'))
+            _regenerate_plan(prev.get('override'), loss_switch=bool(prev.get('loss_switch_accepted')))
         except Exception as regen_exc:
             # The remaining trades were planned together with the one just executed and
             # may no longer make sense on their own – don't leave half a plan on screen.
@@ -1604,6 +1606,13 @@ def update_settings():
     mode = request.form.get('taxable_sell_mode', 'ask')
     P.taxable_sell_mode = mode if mode in ('never', 'ask', 'allow') else 'ask'
     P.allow_loss_sells = request.form.get('allow_loss_sells') == 'on'
+    raw = (request.form.get('loss_switch_min_pct') or '').strip().rstrip('%')
+    if raw:
+        try:
+            P.loss_switch_min_pct = max(1.0, min(float(raw), 100.0))
+        except ValueError:
+            flash('Loss-switch threshold must be a percentage', 'error')
+            return redirect(url_for('settings'))
     P.sl_link_portfolio_id = link
     price_sheet_id = request.form.get('price_sheet_id', '').strip()
     if price_sheet_id and price_sheet_id != current_user.price_sheet_id:
@@ -1685,7 +1694,7 @@ def _copy_setup(src, dst):
             portfolio_id=dst.id, ticker=sec.ticker, name=sec.name, asset_class_id=ac_map[sec.asset_class_id].id,
             currency=sec.currency, auto_update_price=sec.auto_update_price,
             is_illiquid=sec.is_illiquid, is_managed=sec.is_managed, last_price=sec.last_price,
-            migrate_registered_now=sec.migrate_registered_now, migration_sl_link=sec.migration_sl_link)
+            migration_sl_link=sec.migration_sl_link)
         db.session.add(sec_map[sec.id])
     db.session.flush()
     # Default replacements point at the copies, never across portfolios. Per-account

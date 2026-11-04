@@ -75,13 +75,17 @@ Securities and Targets can be edited on their own pages.
   taxable position, but the superficial-loss checks are skipped for it – the provider's underlying trades are the
   real dispositions – and its book value needs regular updates from your statements (see above).
 - **Phasing out (gradual migration)** – Edit security → *Replace with*: move from one security to another in the
-  same asset class (e.g. a less tax-efficient ETF to a more efficient one) without a big taxable sale:
+  same asset class (e.g. a less tax-efficient ETF to a more efficient one). The phase-out is a **by-product of
+  rebalancing**, never a rush:
   - the old security is **never bought** – new money in that class goes to the replacement;
-  - when something in the class has to be sold, the old one goes **first, unless** selling it would realise more
-    capital gain than selling something else – tax still comes first, and taxable holdings are never sold just to
-    switch (selling them is a taxable disposition whatever the reason);
-  - **Switch registered accounts now** (optional): sell all of it in RRSPs, TFSAs etc. in the next plan and buy the
-    replacement – no tax there, only the trading cost;
+  - when the class has to be trimmed, the old one goes **first, unless** selling it would realise more capital gain
+    than selling something else – tax still comes first;
+  - it's **never sold just to switch**, in any account (no swap of the old for the replacement inside an account);
+  - **the one exception – loss switch:** when a non-registered holding of it is down at least the Settings threshold
+    (default **20%**) from its book value, the Rebalance page *offers* to switch it now – sell it, realising the loss,
+    and buy that account's replacement. Nothing happens until you accept, and the choice is kept while you execute
+    the plan. Only when *treat as identical* is unticked (otherwise the loss would be denied), never for a holding
+    bought in the last 30 days, one with no book value, or a provider-managed one;
   - **Treat as identical for the superficial-loss rule** (default on): two funds tracking the same index may be
     identical property, so a loss sale of one and a purchase of the other within 30 days are kept apart, and recent
     trades of either count for both. Untick only if you're sure they aren't (check with a tax professional).
@@ -131,7 +135,9 @@ It minimises, in order of weight:
 - Drift outside the balanced band (Settings) – drift inside the band is nearly free, so it doesn't chase exact targets
 - Capital gains realised in taxable accounts (from book value; losses aren't penalised – see stage 3 below)
 - Number of trades (plus the per-trade cost from Settings)
-- Number of positions – discourages new positions and closes small scattered ones when cheap
+- Number of positions – discourages new positions and closes small scattered ones when cheap (by merging the same
+  security across accounts – a plan never sells one security and buys a different one of the same asset class in
+  the same account)
 - Buying in lower-priority accounts
 - Idle cash
 - A tiny tie-breaker toward selling a security that's being phased out (never enough to add a trade)

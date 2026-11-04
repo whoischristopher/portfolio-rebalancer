@@ -8,7 +8,8 @@ import sys
 import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from services.optimizer import AccountIn, PositionIn, Problem, SecurityIn, solve  # noqa: E402
+from services.optimizer import (AccountIn, PositionIn, Problem, SecurityIn, loss_switch_candidates,  # noqa: E402
+                                solve)
 
 FX = 1.38
 CA, US, INTL, BD = 1, 2, 3, 4
@@ -364,9 +365,9 @@ EQ = CA
 ALT = 22          # a second replacement, e.g. a US-listed fund for the RRSP
 
 
-def _migration_problem(accounts, positions, *, switch_now=False, sl_link=True, targets=None, replaced_in=None, **kw):
+def _migration_problem(accounts, positions, *, sl_link=True, targets=None, replaced_in=None, **kw):
     grp = VEQT_OLD if sl_link else None
-    secs = [SecurityIn(VEQT_OLD, "OLD", EQ, 40, 40, "CAD", switch_registered_now=switch_now, sl_group=grp,
+    secs = [SecurityIn(VEQT_OLD, "OLD", EQ, 40, 40, "CAD", sl_group=grp,
                        replaced_in=replaced_in if replaced_in is not None else {a.id: XEQT_NEW for a in accounts}),
             SecurityIn(XEQT_NEW, "NEW", EQ, 30, 30, "CAD", sl_group=grp),
             SecurityIn(ALT, "ALT", EQ, 50, 50, "CAD", sl_group=grp),
@@ -412,19 +413,53 @@ def test_gradual_mode_adds_no_trades_to_a_balanced_portfolio():
     res = solve(_migration_problem(accts, pos))
     assert res.trades == []
     note = next(n for n in res.notes if n.startswith("Phasing out OLD"))
-    assert "in registered accounts" in note and "switch registered accounts now" in note
+    assert "in registered accounts" in note and "needs trimming" in note
 
 
-def test_switch_registered_now_sells_all_and_buys_the_replacement():
-    accts = [AccountIn(TFSA, "TFSA", False, 0), AccountIn(NR, "Non-Reg", True, 0)]
-    pos = [PositionIn(TFSA, VEQT_OLD, 200), PositionIn(TFSA, ZAG, 143),
-           PositionIn(NR, VEQT_OLD, 100, book_value=2000)]
-    res = solve(_migration_problem(accts, pos, switch_now=True,
-                                   targets={EQ: 85.7, BD: 14.3}))
-    tfsa = {(t.action, t.security_id): t.quantity for t in trades_by(res, account=TFSA)}
-    assert tfsa[("SELL", VEQT_OLD)] == 200
-    assert ("BUY", XEQT_NEW) in tfsa
-    assert not trades_by(res, account=NR)              # taxable stays gradual
+def test_no_switch_inside_an_account_even_when_both_are_held():
+    # TFSA holds OLD and NEW, nothing to rebalance: closing a position isn't worth a swap.
+    accts = [AccountIn(TFSA, "TFSA", False, 0)]
+    pos = [PositionIn(TFSA, VEQT_OLD, 100), PositionIn(TFSA, XEQT_NEW, 133), PositionIn(TFSA, ZAG, 143)]
+    res = solve(_migration_problem(accts, pos, targets={EQ: 79.95, BD: 20.05}))
+    assert res.trades == []
+
+
+def test_no_same_class_swap_without_a_phase_out():
+    # Two bond funds in one TFSA, nothing to rebalance: the position-count saving used to
+    # sell one outright and buy the other. Not any more.
+    accts = [AccountIn(TFSA, "TFSA", False, 0)]
+    secs = [SecurityIn(XIC, "XIC", CA, 56.75, 56.75, "CAD"), SecurityIn(ZAG, "ZAG", BD, 13.5, 13.5, "CAD"),
+            SecurityIn(XEF, "XLB", BD, 17.93, 17.93, "CAD")]
+    pos = [PositionIn(TFSA, XIC, 1000), PositionIn(TFSA, ZAG, 300), PositionIn(TFSA, XEF, 877)]
+    bd = (300 * 13.5 + 877 * 17.93) / (1000 * 56.75 + 300 * 13.5 + 877 * 17.93) * 100
+    p = Problem(accounts=accts, securities=secs, positions=pos, targets={CA: 100 - bd, BD: bd},
+                class_names=NAMES, buy_levels={(TFSA, s.id): 0 for s in secs})
+    assert solve(p).trades == []
+
+
+def test_loss_switch_candidates_and_accepted_switch():
+    accts = [AccountIn(NR, "Non-Reg", True, 0), AccountIn(TFSA, "TFSA", False, 0)]
+    pos = [PositionIn(NR, VEQT_OLD, 100, book_value=5200),     # worth 4000: 23% loss
+           PositionIn(TFSA, VEQT_OLD, 100), PositionIn(TFSA, ZAG, 143)]
+    tg = {EQ: 84.85, BD: 15.15}
+    # Treated as identical: no candidate (the loss would be denied).
+    assert loss_switch_candidates(_migration_problem(accts, pos, targets=tg), 20) == []
+    p = _migration_problem(accts, pos, sl_link=False, targets=tg)
+    c = loss_switch_candidates(p, 20)
+    assert [(x["account_id"], x["ticker"], x["replacement"]) for x in c] == [(NR, "OLD", "NEW")]
+    assert round(c[0]["loss"]) == 1200 and round(c[0]["loss_pct"]) == 23
+    assert loss_switch_candidates(p, 25) == []                               # below the threshold
+    assert not trades_by(solve(p), account=NR)                                # not without asking
+    p.loss_switch = {(NR, VEQT_OLD)}
+    res = solve(p)
+    nr = {(t.action, t.security_id): t for t in trades_by(res, account=NR)}
+    assert nr[("SELL", VEQT_OLD)].quantity == 100 and nr[("SELL", VEQT_OLD)].realized_gain == pytest.approx(-1200)
+    assert ("BUY", XEQT_NEW) in nr
+    assert all(t.security_id != VEQT_OLD for t in trades_by(res, "SELL", TFSA))   # registered: gradual
+    assert any("Switched now at a loss in Non-Reg" in n for n in res.notes)
+    # A recent buy of OLD would make the loss superficial: no candidate.
+    p.loss_switch, p.recent_buys = set(), {VEQT_OLD}
+    assert loss_switch_candidates(p, 20) == []
 
 
 def test_replacement_counts_as_identical_for_superficial_loss():
@@ -446,11 +481,11 @@ def test_replacement_counts_as_identical_for_superficial_loss():
 
 
 def test_different_replacement_per_account():
-    # RRSP switches OLD → ALT, TFSA switches OLD → NEW, both right away.
-    accts = [AccountIn(RRSP, "RRSP", False, 0), AccountIn(TFSA, "TFSA", False, 0)]
+    # New money: the RRSP buys ALT, the TFSA buys NEW.
+    accts = [AccountIn(RRSP, "RRSP", False, 3000), AccountIn(TFSA, "TFSA", False, 3000)]
     pos = [PositionIn(RRSP, VEQT_OLD, 100), PositionIn(TFSA, VEQT_OLD, 100),
            PositionIn(RRSP, ZAG, 143)]
-    res = solve(_migration_problem(accts, pos, switch_now=True, targets={EQ: 85, BD: 15},
+    res = solve(_migration_problem(accts, pos, targets={EQ: 87, BD: 13},
                                    replaced_in={RRSP: ALT, TFSA: XEQT_NEW}))
     buys = {(t.account_id, t.security_id) for t in trades_by(res, "BUY")}
     assert (RRSP, ALT) in buys and (TFSA, XEQT_NEW) in buys
@@ -468,9 +503,11 @@ def test_phase_out_only_in_some_accounts():
                                    buy_levels=lv))
     assert not [t for t in trades_by(res, "BUY", TFSA) if t.security_id == VEQT_OLD]
     assert [t for t in trades_by(res, "BUY", RRSP) if t.security_id == VEQT_OLD]    # held there, still bought
-    # The TFSA consolidates into NEW (no tax there); the RRSP's OLD isn't part of the phase-out.
+    tfsa = {(t.action, t.security_id) for t in trades_by(res, account=TFSA)}
+    assert not {("SELL", VEQT_OLD), ("BUY", XEQT_NEW)} <= tfsa                 # no swap inside the TFSA
+    # Only the TFSA's OLD (worth $4,000) counts as left to phase out, not the RRSP's.
     note = next(n for n in res.notes if n.startswith("Phasing out OLD"))
-    assert "fully switched" in note
+    assert "in registered accounts" in note and "$8,000" not in note
 
 
 # --------------------------------------------------------------------------- #
