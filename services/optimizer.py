@@ -42,8 +42,12 @@ Hard constraints:
     Securities sharing an sl_group (a phased-out security and its replacements,
     when the user treats them as identical property) count as one security here.
   * a security being phased out in an account (replaced_in[account] set) is never
-    bought there; with switch_registered_now its registered-account holdings are sold
-    in full (no tax there), and the proceeds normally go to that account's replacement.
+    bought there. A phase-out is a by-product of rebalancing: it's never sold just to
+    switch – except a loss switch the user accepted (Problem.loss_switch): a taxable
+    holding at a loss sold in full, the proceeds going to that account's replacement.
+  * no swaps inside an account: a plan never sells one security and buys a different
+    one of the same asset class in the same account (that's churn, not rebalancing –
+    e.g. closing a position to save the position cost). Accepted loss switches excepted.
 """
 from __future__ import annotations
 
@@ -88,7 +92,6 @@ class SecurityIn:
     # Phase-out: account_id -> the security replacing this one in that account. In those
     # accounts it's never bought and is sold first when that's no worse for tax.
     replaced_in: dict = field(default_factory=dict)
-    switch_registered_now: bool = False   # phased out: sell all of it in registered accounts now
     sl_group: int | None = None       # superficial-loss identity (None = itself)
 
     @property
@@ -137,6 +140,9 @@ class Problem:
     trade_cost: float = 0.0                   # base currency per trade
     allow_taxable_sells: bool = True
     allow_loss_sells: bool = False            # taxable sells at a loss even when taxable sells aren't allowed
+    # Accepted loss switches: (account_id, security_id) of phased-out taxable holdings at a
+    # loss to sell in full now and replace (see loss_switch_candidates()).
+    loss_switch: set = field(default_factory=set)
     prefer_loss_sales: bool = True            # stage 3: sell taxable losers rather than registered holdings
     recent_buys: set[int] = field(default_factory=set)        # sec ids bought ≤30d ago (any account)
     recent_loss_sells: set[int] = field(default_factory=set)  # sec ids sold at a loss ≤30d ago (taxable)
@@ -275,7 +281,8 @@ def solve(p: Problem) -> Result:
     capacity = {a.id: a.cash for a in p.accounts}
     for (a_id, s_id), (q, bv) in held.items():
         at_loss = bv is not None and q * sec[s_id].price < bv and not sec[s_id].managed
-        if not acc[a_id].taxable or p.allow_taxable_sells or (p.allow_loss_sells and at_loss):
+        if (not acc[a_id].taxable or p.allow_taxable_sells or (p.allow_loss_sells and at_loss)
+                or (a_id, s_id) in p.loss_switch):
             capacity[a_id] += q * sec[s_id].price
 
     # ---- decision variables per (account, security) pair --------------- #
@@ -287,7 +294,7 @@ def solve(p: Problem) -> Result:
     const_offset = 0.0
     keys = set(held) | _buy_candidates(p, acc, sec, held)
     missing_acb = set()
-    forced_switch: set = set()
+    switched: set = set()                 # (account, security) loss switches applied
     for (a_id, s_id) in sorted(keys):
         a, s = acc[a_id], sec[s_id]
         if s.asset_class_id not in p.targets or s.price <= 0:
@@ -313,8 +320,9 @@ def solve(p: Problem) -> Result:
         # A provider-managed sleeve's book value goes stale (its tax-loss harvesting lowers it),
         # so an apparent loss there may be a gain: it never counts as a loss sale.
         loss_ps = -gain_ps if is_loss and not s.managed else 0.0
+        loss_switch = (a_id, s_id) in p.loss_switch and phasing_out and loss_ps > 0
         can_sell = q_held > 0 and s.sellable and (not a.taxable or p.allow_taxable_sells
-                                                   or (p.allow_loss_sells and loss_ps > 0))
+                                                   or (p.allow_loss_sells and loss_ps > 0) or loss_switch)
         if is_loss and sl_applies and s_id in p.recent_buys:
             can_sell = False   # loss would be superficial
             notes.append(f"{s.ticker} in {a.name}: sale at a loss blocked – bought within the last 30 days.")
@@ -336,12 +344,12 @@ def solve(p: Problem) -> Result:
         i["z"] = V.add(0, 1, cost=W.position, integer=True)
         if q_held > 0:
             const_offset += W.position
-        if phasing_out and s.switch_registered_now and not a.taxable and can_sell and q_held > 0:
-            # Switching inside a registered account costs no tax: sell the whole position now.
+        if loss_switch and can_sell:
+            # Accepted loss switch: sell the whole position now (realises the loss).
             V.lb[i["s"]] = q_held
             V.lb[i["ys"]] = 1
             V.ub[i["z"]] = 0
-            forced_switch.add(s_id)
+            switched.add((a_id, s_id))
         pairs.append(i)
 
     if missing_acb and p.allow_taxable_sells:
@@ -405,6 +413,19 @@ def solve(p: Problem) -> Result:
         for j in pairs:
             if j["sec"].sl_key == i["sec"].sl_key and j is not i and V.ub[j["yb"]] > 0:
                 row({i["ys"]: 1, j["yb"]: 1}, -np.inf, 1)
+
+    # no swaps inside an account (sell X, buy a different Y of the same asset class)
+    by_slot: dict[tuple[int, int], list] = {}
+    for i in pairs:
+        by_slot.setdefault((i["acct"].id, i["sec"].asset_class_id), []).append(i)
+    for (a_id, _), group in by_slot.items():
+        for i in group:
+            if V.ub[i["ys"]] <= 0:
+                continue
+            allowed = i["sec"].replaced_in.get(a_id) if (a_id, i["sec"].id) in switched else None
+            for j in group:
+                if j is not i and j["sec"].id != allowed and V.ub[j["yb"]] > 0:
+                    row({i["ys"]: 1, j["yb"]: 1}, -np.inf, 1)
 
     # ---- solve ---------------------------------------------------------- #
     # scipy's HiGHS wrapper only exposes a RELATIVE gap.  Pin the objective's scale
@@ -523,7 +544,7 @@ def solve(p: Problem) -> Result:
                 notes.append(f"{a.name}: convert about {fmt_money(amt, ccy, p.base_currency)} from {a.currency} before buying "
                              "(planned at spot rate).")
 
-    notes += _migration_notes(p, acc, sec, held, trades, forced_switch)
+    notes += _migration_notes(p, acc, sec, held, trades, switched)
     loss_sells = [t for t in trades if t.action == "SELL" and (t.realized_gain or 0) < -0.5]
     if loss_sells:
         what = ", ".join(sorted({f"{sec[t.security_id].ticker} in {acc[t.account_id].name}" for t in loss_sells}))
@@ -631,7 +652,40 @@ def _buy_candidates(p: Problem, acc, sec, held) -> set:
     return out
 
 
-def _migration_notes(p: Problem, acc, sec, held, trades, forced_switch) -> list[str]:
+def loss_switch_candidates(p: Problem, min_loss_pct: float) -> list[dict]:
+    """Phased-out holdings in taxable accounts worth switching now because selling them
+    realises a loss of at least *min_loss_pct* % of their book value. Only where the
+    replacement isn't treated as identical property (else the loss would be denied), the
+    old security wasn't bought in the last 30 days, its book value is known and it isn't
+    a provider-managed sleeve, and the replacement can be bought in that account."""
+    acc = {a.id: a for a in p.accounts}
+    sec = {s.id: s for s in p.securities}
+    held: dict[tuple[int, int], list] = {}
+    for pos in p.positions:
+        if pos.account_id in acc and pos.security_id in sec and pos.quantity > 0:
+            q, bv = held.get((pos.account_id, pos.security_id), [0.0, 0.0])
+            bv = None if (bv is None or pos.book_value is None) else bv + pos.book_value
+            held[(pos.account_id, pos.security_id)] = [q + pos.quantity, bv]
+    out = []
+    for (a_id, s_id), (q, bv) in sorted(held.items()):
+        s, a = sec[s_id], acc[a_id]
+        new_id = s.replaced_in.get(a_id)
+        if (new_id is None or new_id not in sec or not a.taxable or bv is None or bv <= 0 or s.managed
+                or not s.sellable or s.price <= 0):
+            continue
+        value = q * s.price
+        loss = bv - value
+        if loss <= 0 or loss / bv * 100 < min_loss_pct - 1e-9:
+            continue
+        if sec[new_id].sl_key == s.sl_key or s_id in p.recent_buys or (a_id, new_id) not in p.buy_levels:
+            continue
+        out.append(dict(account_id=a_id, account=a.name, security_id=s_id, ticker=s.ticker,
+                        replacement_id=new_id, replacement=sec[new_id].ticker,
+                        value=value, loss=loss, loss_pct=loss / bv * 100))
+    return out
+
+
+def _migration_notes(p: Problem, acc, sec, held, trades, switched) -> list[str]:
     """One line per phased-out security: what this plan moves and what's left, and where."""
     notes = []
     sold: dict[tuple[int, int], float] = {}
@@ -667,11 +721,13 @@ def _migration_notes(p: Problem, acc, sec, held, trades, forced_switch) -> list[
             if left_tax >= 0.5:
                 parts.append(f"{m(left_tax)} in taxable accounts")
             line += f"{m(left)} left ({' and '.join(parts)})."
-            if left_reg >= 0.5 and not s.switch_registered_now and s.sellable:
-                line += (" Switching in a registered account costs no tax – turn on \"switch registered accounts "
-                         "now\" on the security to finish there.")
-            elif left_tax >= 0.5:
-                line += " Taxable holdings are sold only when that's no worse for tax than selling something else."
+            line += (" It's sold only when its asset class needs trimming"
+                     + (", and in taxable accounts only when that's no worse for tax" if left_tax >= 0.5 else "")
+                     + ".")
+        done = sorted(acc[a_id].name for (a_id, s_id) in switched if s_id == s.id)
+        if done:
+            line += (f" Switched now at a loss in {', '.join(done)} – the replacement is marked as not identical "
+                     f"property, so buying it right away keeps the loss; just don't buy {s.ticker} back for 30 days.")
         if not s.sellable:
             line += f" {s.ticker} can't be sold on demand, so it only shrinks as you redeem it."
         notes.append(line)

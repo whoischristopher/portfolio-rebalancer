@@ -27,7 +27,9 @@ from extensions import db
 from models import (Account, Holding, PendingRedemption, RebalanceTransaction,
                     Security, SecurityPreference, Target)
 from services.fx import convert_to_base, get_exchange_rates
-from services.optimizer import AccountIn, PositionIn, Problem, SecurityIn, solve
+from dataclasses import replace
+
+from services.optimizer import AccountIn, PositionIn, Problem, SecurityIn, loss_switch_candidates, solve
 from services.prices import normalize_ticker
 
 log = logging.getLogger(__name__)
@@ -257,7 +259,6 @@ def _apply_migrations(portfolio, sec_in, securities, accounts, levels, notes) ->
         for reason, names in sorted(paused.items()):
             notes.append(f"Phasing out {sec.ticker} is paused in {', '.join(sorted(names))}: {reason}, so "
                          f"{sec.ticker} is treated as a normal holding there this time.")
-        old.switch_registered_now = bool(sec.migrate_registered_now)
 
     groups: dict[int, set] = {}
     for x in list(parent) + list(parent.values()):
@@ -425,8 +426,12 @@ def redemption_options(portfolio, result, problem, exchange_rates) -> list:
     return out
 
 
-def generate_plan(portfolio, taxable_override: str | None = None) -> tuple[list, dict]:
-    """Solve, persist the plan, and return (transactions, summary)."""
+def generate_plan(portfolio, taxable_override: str | None = None, loss_switch: bool = False) -> tuple[list, dict]:
+    """Solve, persist the plan, and return (transactions, summary).
+
+    loss_switch: the user accepted the loss-switch offer – phased-out taxable holdings at
+    a loss of at least Portfolio.loss_switch_min_pct are sold now and replaced. Without
+    it, any such holdings are only offered (summary["loss_switch_offer"])."""
     mode = taxable_override or portfolio.taxable_sell_mode or "ask"
     if mode not in TAXABLE_MODES:
         mode = "ask"
@@ -435,15 +440,33 @@ def generate_plan(portfolio, taxable_override: str | None = None) -> tuple[list,
     problem, notes = build_problem(portfolio, fx, allow_taxable_sells=(mode == "allow"))
     if not problem.targets:
         raise ValueError("No targets defined – set asset-class targets first.")
+    min_pct = portfolio.loss_switch_min_pct if portfolio.loss_switch_min_pct is not None else 20.0
+    candidates = loss_switch_candidates(problem, min_pct)
+    switch_set = {(c["account_id"], c["security_id"]) for c in candidates}
+    if loss_switch and switch_set:
+        problem = replace(problem, loss_switch=switch_set)
     result = solve(problem)
     summary = _summarise(result, problem)
     summary["mode"] = mode
     summary["notes"] = notes + summary["notes"]
+    items = [{k: (round(v, 2) if isinstance(v, float) else v) for k, v in c.items()
+              if k in ("account", "ticker", "replacement", "value", "loss", "loss_pct")} for c in candidates]
+    if loss_switch and switch_set:
+        summary["loss_switch"] = items
+    elif candidates:
+        alt = solve(replace(problem, loss_switch=switch_set))
+        summary["loss_switch_offer"] = {
+            "items": items, "min_pct": min_pct,
+            "loss": round(sum(c["loss"] for c in candidates), 2),
+            "extra_trades": max(len(alt.trades) - len(result.trades), 0),
+        }
     summary["redemptions"] = redemption_options(portfolio, result, problem, fx)
 
     # Ask mode: would allowing taxable sells fix what's left?
     if mode == "ask" and result.out_of_band:
         alt_problem, _ = build_problem(portfolio, fx, allow_taxable_sells=True)
+        if loss_switch and switch_set:
+            alt_problem = replace(alt_problem, loss_switch=switch_set)
         alt = solve(alt_problem)
         if alt.taxable_sells and (len(alt.out_of_band) < len(result.out_of_band)
                                   or alt.max_out_of_band < result.max_out_of_band - 0.05):

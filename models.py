@@ -63,6 +63,10 @@ class Portfolio(db.Model):
     # In Never/Ask mode, still allow selling a taxable holding that's at a loss (it realises
     # no gain) – and when something has to be sold, prefer it over a registered holding.
     allow_loss_sells = db.Column(db.Boolean, default=True)
+    # Phase-outs: offer to switch a taxable holding of a phased-out security now when that
+    # realises a loss of at least this % of its book value (the replacement must not be
+    # treated as identical property). Shown as an opt-in offer on the Rebalance page.
+    loss_switch_min_pct = db.Column(db.Float, default=20.0)
     last_plan_summary = db.Column(db.Text)                        # JSON from rebalancer.generate_plan
     # Optional: also respect the superficial-loss rule against trades recorded in this
     # other portfolio (e.g. your spouse's – an affiliated person). NULL = off (default).
@@ -326,7 +330,8 @@ class Security(db.Model):
     # portfolio and asset class) – the DEFAULT replacement; account_replacements override
     # it per account (a different security, or "keep it here"). Where it's being replaced
     # it's never bought, and is the first thing sold in its class when that's no worse for
-    # tax. migrate_registered_now: sell it outright in registered accounts (no tax there).
+    # tax – a by-product of rebalancing, never a sale just to switch (except an accepted
+    # loss switch in a taxable account, see Portfolio.loss_switch_min_pct).
     # migration_sl_link: treat it and its replacements as identical property for the
     # superficial-loss rule (the conservative default).
     replaced_by_id = db.Column(db.Integer, db.ForeignKey('securities.id'), nullable=True)
@@ -334,7 +339,6 @@ class Security(db.Model):
     # class that the account preferences (Restricted / Prioritized) favour there – see
     # rebalancer.replacement_map(). Per-account overrides still win.
     phase_out_auto = db.Column(db.Boolean, default=False)
-    migrate_registered_now = db.Column(db.Boolean, default=False)
     migration_sl_link = db.Column(db.Boolean, default=True)
 
     # Relationship links

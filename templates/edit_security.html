@@ -103,19 +103,18 @@
             </details>
             {% endif %}
 
-            <p class="help">Where it's being phased out, {{ security.ticker }} is never bought – new money goes to that account's
-                replacement – and when something in this asset class has to be sold, {{ security.ticker }} goes first <em>unless</em>
-                selling it would realise more capital gain than selling something else. Taxable holdings are never sold just to switch.</p>
+            <p class="help">The phase-out happens as part of rebalancing, never in a rush: where it's being phased out,
+                {{ security.ticker }} is never bought – new money goes to that account's replacement – and when this asset class
+                has to be trimmed, {{ security.ticker }} goes first <em>unless</em> selling it would realise more capital gain than
+                selling something else. It's never sold just to switch. The one exception you're offered: a non-registered
+                holding at a loss of at least {{ '%g'|format(security.portfolio.loss_switch_min_pct or 20) }}% (Settings), switched
+                to realise the loss – only when the box below is unticked.</p>
             <div class="stack" data-migration-options>
-                <label class="check"><input type="checkbox" name="migrate_registered_now" {% if security.migrate_registered_now %}checked{% endif %}>
-                    Switch registered accounts now</label>
-                <small class="help">Sells all of {{ security.ticker }} in RRSPs, TFSAs etc. in the next plan and buys the
-                    replacement – there's no tax on switching there, only the trading cost.</small>
-                <label class="check" style="margin-top: 0.75rem;"><input type="checkbox" name="migration_sl_link" {% if security.migration_sl_link is not false %}checked{% endif %}>
+                <label class="check"><input type="checkbox" name="migration_sl_link" {% if security.migration_sl_link is not false %}checked{% endif %}>
                     Treat them as identical for the superficial-loss rule</label>
                 <small class="help">Two funds tracking the same index may be "identical property" to the CRA. When ticked, selling
                     {{ security.ticker }} (or a replacement) at a loss in a taxable account is never paired with buying another of them
-                    within 30 days. Untick only if you're confident they aren't identical (e.g. different indexes) – check with a tax professional.</small>
+                    within 30 days, and no loss switch is offered. Untick only if you're confident they aren't identical (e.g. different indexes) – check with a tax professional.</small>
             </div>
         </fieldset>
 

@@ -44,6 +44,16 @@
             </small>
         </div>
         <div class="form-group">
+            <label for="loss_switch_min_pct">Phase-out: offer a loss switch from (%)</label>
+            <input type="number" step="1" min="1" max="100" id="loss_switch_min_pct" name="loss_switch_min_pct"
+                   value="{{ '%g'|format(portfolio.loss_switch_min_pct if portfolio.loss_switch_min_pct is not none else 20) }}">
+            <small style="color: var(--muted);">
+                Phase-outs otherwise happen only as part of rebalancing. When a non-registered holding of a security being
+                phased out is down at least this much from its book value, the Rebalance page offers to switch it now –
+                sell it, realising the loss, and buy its replacement. Only for replacements not treated as identical property.
+            </small>
+        </div>
+        <div class="form-group">
             <label for="balanced_threshold">Balanced Allocation Threshold (%)</label>
             <input type="number" 
                    step="0.1" 

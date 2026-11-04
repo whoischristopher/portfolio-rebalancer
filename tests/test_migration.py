@@ -86,38 +86,83 @@ def test_edit_form_rules(mig):
     _edit(c, ids["old"], "OLD", "Equity", replaced_by_id=str(ids["old"]))          # itself
     with app.app_context():
         assert db.session.get(Security, ids["old"]).replaced_by_id is None
-    _edit(c, ids["old"], "OLD", "Equity", replaced_by_id=str(ids["new"]), migrate_registered_now="on")
+    _edit(c, ids["old"], "OLD", "Equity", replaced_by_id=str(ids["new"]))
     with app.app_context():
         o = db.session.get(Security, ids["old"])
-        assert o.replaced_by_id == ids["new"] and o.migrate_registered_now
+        assert o.replaced_by_id == ids["new"]
         assert o.migration_sl_link is False                     # box not posted = unticked
+    assert b"migrate_registered_now" not in c.get(f"/securities/{ids['old']}/edit").data   # option removed
     assert b"phasing out" in c.get("/securities").data
     # A replacement has to stay in the same asset class as what it replaces.
     _edit(c, ids["new"], "NEW", "Bonds")
     with app.app_context():
         assert db.session.get(Security, ids["new"]).asset_class_id == ids["eq"]
     # Clearing the select ends the migration and resets its options.
-    _edit(c, ids["old"], "OLD", "Equity", replaced_by_id="", migrate_registered_now="on")
+    _edit(c, ids["old"], "OLD", "Equity", replaced_by_id="")
     with app.app_context():
         o = db.session.get(Security, ids["old"])
-        assert o.replaced_by_id is None and not o.migrate_registered_now and o.migration_sl_link
+        assert o.replaced_by_id is None and o.migration_sl_link
 
 
-def test_plan_switches_registered_now_and_leaves_taxable(mig):
+def _cash(app, db, ids, account, amount):
+    from models import Account
+    with app.app_context():
+        db.session.get(Account, ids[account]).cash_balance = amount
+        db.session.commit()
+
+
+def test_phase_out_is_a_by_product_of_rebalancing(mig):
+    """New money goes to the replacement; nothing is sold just to switch, in any account."""
     app, db, c, ids = mig
     from models import Security
     with app.app_context():
-        o = db.session.get(Security, ids["old"])
-        o.replaced_by_id, o.migrate_registered_now = ids["new"], True
+        db.session.get(Security, ids["old"]).replaced_by_id = ids["new"]
         db.session.commit()
+    _cash(app, db, ids, "tfsa", 3000)                                    # equity now under target
     c.post("/rebalance/generate")
     plan = _plan(app, ids)
-    assert (ids["tfsa"], "SELL", ids["old"], 200) in plan
     assert any(a == ids["tfsa"] and act == "BUY" and s == ids["new"] for a, act, s, _ in plan)
-    assert not [t for t in plan if t[0] == ids["nr"]]                   # taxable: no switch just for its own sake
+    assert not [t for t in plan if t[1] == "SELL" and t[2] == ids["old"]]
     assert not [t for t in plan if t[1] == "BUY" and t[2] == ids["old"]]
+    assert "Phasing out OLD" in c.get("/rebalance").get_data(as_text=True)
+
+
+def test_loss_switch_is_offered_then_included(mig):
+    app, db, c, ids = mig
+    from models import Holding, Portfolio, Security
+    with app.app_context():
+        o = db.session.get(Security, ids["old"])
+        o.replaced_by_id, o.migration_sl_link = ids["new"], False
+        h = Holding.query.filter_by(account_id=ids["nr"], security_id=ids["old"]).one()
+        h.book_value = 5200                                               # worth 4000: 23% loss
+        db.session.commit()
+    c.post("/rebalance/generate")
+    assert not [t for t in _plan(app, ids) if t[0] == ids["nr"]]          # offered, not included
     page = c.get("/rebalance").get_data(as_text=True)
-    assert "Phasing out OLD" in page
+    assert "switch a phased-out holding now to realise a loss" in page and "OLD in Joint → NEW" in page
+    c.post("/rebalance/generate", data={"loss_switch": "1"})
+    plan = _plan(app, ids)
+    assert any(a == ids["nr"] and act == "SELL" and s == ids["old"] and g < 0 for a, act, s, g in plan)
+    assert any(a == ids["nr"] and act == "BUY" and s == ids["new"] for a, act, s, _ in plan)
+    assert not [t for t in plan if t[0] == ids["tfsa"] and t[1] == "SELL" and t[2] == ids["old"]]
+    page = c.get("/rebalance").get_data(as_text=True)
+    assert "Includes the loss switch you accepted" in page
+    with app.app_context():
+        import json
+        assert json.loads(db.session.get(Portfolio, ids["p"]).last_plan_summary)["loss_switch_accepted"] is True
+    # Above the threshold → no offer.
+    c.post("/settings/update", data={"base_currency": "CAD", "balanced_threshold": "0.5", "trade_cost": "0",
+                                     "taxable_sell_mode": "ask", "allow_loss_sells": "on",
+                                     "loss_switch_min_pct": "25"})
+    c.post("/rebalance/generate")
+    assert "switch a phased-out holding now" not in c.get("/rebalance").get_data(as_text=True)
+    # Treated as identical → never offered.
+    with app.app_context():
+        db.session.get(Security, ids["old"]).migration_sl_link = True
+        db.session.get(Portfolio, ids["p"]).loss_switch_min_pct = 20
+        db.session.commit()
+    c.post("/rebalance/generate")
+    assert "switch a phased-out holding now" not in c.get("/rebalance").get_data(as_text=True)
 
 
 def test_gradual_mode_leaves_a_balanced_portfolio_alone(mig):
@@ -128,7 +173,7 @@ def test_gradual_mode_leaves_a_balanced_portfolio_alone(mig):
         db.session.commit()
     c.post("/rebalance/generate")
     assert _plan(app, ids) == []
-    assert "switch registered accounts now" in c.get("/rebalance").get_data(as_text=True)
+    assert "needs trimming" in c.get("/rebalance").get_data(as_text=True)
 
 
 def test_migration_paused_when_replacement_has_no_price(mig):
@@ -209,7 +254,7 @@ def test_per_account_replacements_form_and_plan(mig):
     from models import Security, SecurityReplacement
     alt = _add_alt(app, db, ids, restrict_to=[ids["tfsa"]])
     # Default NEW, but ALT in the TFSA; the taxable account keeps OLD.
-    _edit(c, ids["old"], "OLD", "Equity", replaced_by_id=str(ids["new"]), migrate_registered_now="on",
+    _edit(c, ids["old"], "OLD", "Equity", replaced_by_id=str(ids["new"]),
           migration_sl_link="on", **{f"acct_repl_{ids['tfsa']}": str(alt), f"acct_repl_{ids['nr']}": "keep"})
     with app.app_context():
         o = db.session.get(Security, ids["old"])
@@ -222,10 +267,11 @@ def test_per_account_replacements_form_and_plan(mig):
     # The badge lists replacements actually in use: TFSA → ALT, Joint keeps OLD, so NEW (the default) is unused.
     assert "phasing out → ALT<" in c.get("/securities").get_data(as_text=True)
 
+    _cash(app, db, ids, "tfsa", 3000)
     c.post("/rebalance/generate")
     plan = _plan(app, ids)
-    assert (ids["tfsa"], "SELL", ids["old"], 200) in plan
     assert any(a == ids["tfsa"] and act == "BUY" and s == alt for a, act, s, _ in plan)
+    assert not [t for t in plan if t[1] == "SELL" and t[2] == ids["old"]]
     assert not [t for t in plan if t[2] == ids["new"]]
     assert not [t for t in plan if t[0] == ids["nr"]]
     with app.app_context():
@@ -246,7 +292,7 @@ def test_per_account_replacements_form_and_plan(mig):
         o = db.session.get(Security, ids["old"])
         assert o.replaced_by_id is None
         assert {r.account_id: r.replacement_id for r in o.account_replacements} == {ids["tfsa"]: alt}
-        assert o.is_phasing_out and o.migration_sl_link is False and not o.migrate_registered_now
+        assert o.is_phasing_out and o.migration_sl_link is False
 
     # Deleting ALT: the TFSA keeps OLD rather than being switched to something else.
     c.post(f"/securities/{alt}/delete")
@@ -263,7 +309,7 @@ def test_per_account_replacements_form_and_plan(mig):
 def test_restricted_replacement_pauses_that_account(mig):
     app, db, c, ids = mig
     alt = _add_alt(app, db, ids, restrict_to=[ids["nr"]])          # ALT not allowed in the TFSA
-    r = _edit(c, ids["old"], "OLD", "Equity", replaced_by_id=str(alt), migrate_registered_now="on")
+    r = _edit(c, ids["old"], "OLD", "Equity", replaced_by_id=str(alt))
     page = c.get("/securities").get_data(as_text=True)
     assert "be phased out in TFSA" in page and "allowed there (Securities" in page   # warned on save
     c.post("/rebalance/generate")
@@ -309,7 +355,7 @@ def test_automatic_replacement_follows_account_preferences(mig):
     # in Joint, CCC (P1) and NEW (no preference) are both level 0 and CCC names Joint.
     page = c.get(f"/securities/{ids['old']}/edit").get_data(as_text=True)
     assert "By account preferences (automatic)" in page and "BBB" in page and "CCC" in page
-    _edit(c, ids["old"], "OLD", "Equity", replaced_by_id="auto", migrate_registered_now="on", migration_sl_link="on")
+    _edit(c, ids["old"], "OLD", "Equity", replaced_by_id="auto", migration_sl_link="on")
     with app.app_context():
         o = db.session.get(Security, ids["old"])
         assert o.phase_out_auto and o.replaced_by_id is None and o.is_phasing_out
@@ -319,10 +365,11 @@ def test_automatic_replacement_follows_account_preferences(mig):
         assert old_in.replaced_in == {ids["tfsa"]: b_id, ids["nr"]: c_id}
         assert {s.id for s in prob.securities if s.sl_group == ids["old"]} == {ids["old"], b_id, c_id}
     assert "phasing out → BBB, CCC" in c.get("/securities").get_data(as_text=True)
+    _cash(app, db, ids, "tfsa", 3000)
     c.post("/rebalance/generate")
     plan = _plan(app, ids)
-    assert (ids["tfsa"], "SELL", ids["old"], 200) in plan
     assert any(a == ids["tfsa"] and act == "BUY" and s == b_id for a, act, s, _ in plan)
+    assert not [t for t in plan if t[1] == "SELL" and t[2] == ids["old"]]
     assert not [t for t in plan if t[0] == ids["nr"]]                  # taxable: gradual
     # An exception still wins over automatic: keep OLD in Joint.
     _edit(c, ids["old"], "OLD", "Equity", replaced_by_id="auto", **{f"acct_repl_{ids['nr']}": "keep"})
