@@ -12,11 +12,11 @@ gunicorn>=26.0,<27             # request-smuggling fixes in 22.0 / 23.0
 
 # Auth
 flask-login>=0.6.3,<0.7
-Authlib>=1.9,<2
+Authlib>=1.9.4,<2
 
 # Database
 Flask-SQLAlchemy>=3.1.1,<4
-SQLAlchemy>=2.1,<2.2
+SQLAlchemy>=2.1.8,<2.2
 
 # HTTP (exchange rates, Bank of Canada)
 requests>=2.32.4,<3            # CVE-2024-35195 fixed in 2.32.0, CVE-2024-47081 in 2.32.4
@@ -27,5 +27,5 @@ numpy>=2.5,<3
 
 # Google Sheets price feed
 google-api-python-client>=2.150,<3
-google-auth>=2.35,<3
+google-auth>=2.62.1,<3
 google-auth-httplib2>=0.2,<1
